@@ -1,0 +1,17 @@
+# Core API
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+pydantic==2.11.4
+pydantic-settings==2.9.1
+
+# Transformers backend (local dev + fallback)
+torch==2.6.0
+transformers==4.51.3
+accelerate==1.6.0
+bitsandbytes==0.45.5
+huggingface-hub==0.30.2
+sentencepiece==0.2.0
+
+# vLLM backend (production/Linux+GPU only)
+# Uncomment on the cloud instance — do NOT install on Windows
+# vllm>=0.4.0
