@@ -17,5 +17,8 @@ class Settings(BaseSettings):
     # "transformers" for local dev (Windows/CPU), "vllm" for production (Linux/GPU)
     inference_backend: str = "transformers"
 
+    # Leave empty to disable auth (local dev). Set a strong value in production.
+    api_key: str = ""
+
 
 settings = Settings()

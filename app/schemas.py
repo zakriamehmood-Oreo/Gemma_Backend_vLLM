@@ -1,3 +1,4 @@
+from typing import Literal
 from pydantic import BaseModel, Field
 
 
@@ -18,3 +19,24 @@ class HealthResponse(BaseModel):
     status: str
     model_id: str
     model_loaded: bool
+
+
+class AnalyzeRequest(BaseModel):
+    message: str = Field(..., min_length=1, description="Raw customer message to analyze")
+    max_new_tokens: int | None = Field(None, gt=0, le=512)
+
+
+class AnalysisResult(BaseModel):
+    sentimentLabel: Literal["positive", "neutral", "negative", "threatening"]
+    tone: Literal["calm", "frustrated", "angry", "anxious", "appreciative", "demanding", "sarcastic"]
+    urgency: Literal["low", "medium", "high", "critical"]
+    sentimentScore: int = Field(..., ge=0, le=100)
+    queryType: str
+    churnRisk: int = Field(..., ge=0, le=100)
+
+
+class AnalyzeResponse(BaseModel):
+    result: AnalysisResult
+    prompt_tokens: int
+    completion_tokens: int
+    raw_response: str

@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -37,8 +37,38 @@ def test_health_model_loaded(client, loaded_model):
 def test_health_model_not_loaded(client, unloaded_model):
     resp = client.get("/health")
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["model_loaded"] is False
+    assert resp.json()["model_loaded"] is False
+
+
+# --- /metrics ---
+
+def test_metrics_endpoint_available(client):
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    assert b"gemma_model_loaded" in resp.content
+
+
+def test_metrics_records_success(client, loaded_model):
+    with patch.object(gemma, "generate", return_value=("hi", 4, 2)):
+        client.post("/generate", json={"prompt": "test"})
+    resp = client.get("/metrics")
+    assert b'gemma_requests_total{status="success"}' in resp.content
+    assert b"gemma_inference_duration_seconds_count" in resp.content
+    assert b"gemma_prompt_tokens_total" in resp.content
+    assert b"gemma_completion_tokens_total" in resp.content
+
+
+def test_metrics_records_model_not_loaded(client, unloaded_model):
+    client.post("/generate", json={"prompt": "test"})
+    resp = client.get("/metrics")
+    assert b'gemma_requests_total{status="model_not_loaded"}' in resp.content
+
+
+def test_metrics_records_error(client, loaded_model):
+    with patch.object(gemma, "generate", side_effect=RuntimeError("OOM")):
+        client.post("/generate", json={"prompt": "test"})
+    resp = client.get("/metrics")
+    assert b'gemma_requests_total{status="error"}' in resp.content
 
 
 # --- /generate ---
