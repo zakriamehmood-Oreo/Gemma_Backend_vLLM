@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
 
 from app.auth import verify_api_key
+from app.preprocessing import preprocess_message
 from app.config import settings
 from app.inference import gemma
 from app.metrics import (
@@ -144,7 +145,8 @@ async def analyze(request: AnalyzeRequest):
         requests_total.labels(status="model_not_loaded").inc()
         raise HTTPException(status_code=503, detail="Model is not loaded")
 
-    prompt = _ANALYZE_PROMPT.format(message=request.message)
+    clean_message = preprocess_message(request.message)
+    prompt = _ANALYZE_PROMPT.format(message=clean_message)
 
     active_requests.inc()
     start = time.perf_counter()
@@ -189,4 +191,5 @@ async def analyze(request: AnalyzeRequest):
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         raw_response=raw_text,
+        preprocessed_message=clean_message,
     )

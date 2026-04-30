@@ -40,3 +40,4 @@ class AnalyzeResponse(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     raw_response: str
+    preprocessed_message: str

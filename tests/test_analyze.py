@@ -77,6 +77,7 @@ def test_analyze_success(client, loaded_model):
     assert data["prompt_tokens"] == 50
     assert data["completion_tokens"] == 40
     assert data["raw_response"] == VALID_FENCED
+    assert "preprocessed_message" in data
 
 
 def test_analyze_model_not_loaded(client, unloaded_model):
