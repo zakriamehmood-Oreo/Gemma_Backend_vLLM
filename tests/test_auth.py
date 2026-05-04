@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.inference import gemma
 
-VALID_JSON = '{"sentimentLabel":"negative","tone":"frustrated","urgency":"high","sentimentScore":30,"queryType":"Order/Shipping Issue","churnRisk":65}'
+VALID_JSON = '{"sentiment":"negative","tone":"frustrated","urgency":"high","sentiment_score":30,"query_type":"shipping-delay","churn_risk":65}'
 
 
 @pytest.fixture

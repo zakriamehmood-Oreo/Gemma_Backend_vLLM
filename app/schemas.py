@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class GenerateRequest(BaseModel):
@@ -26,13 +26,43 @@ class AnalyzeRequest(BaseModel):
     max_new_tokens: int | None = Field(None, gt=0, le=512)
 
 
+_VALID_SENTIMENTS = {"positive", "neutral", "negative", "threatening"}
+_VALID_TONES = {"calm", "frustrated", "angry", "anxious", "appreciative", "demanding", "sarcastic"}
+_VALID_URGENCIES = {"low", "medium", "high", "critical"}
+_VALID_QUERY_TYPES = {
+    "order-status", "shipping-delay", "address-change", "order-modification",
+    "order-hold", "refund", "billing", "product-inquiry", "restock-inquiry",
+    "damaged-item", "warranty", "technical-issue", "general-inquiry",
+}
+
+
 class AnalysisResult(BaseModel):
-    sentimentLabel: Literal["positive", "neutral", "negative", "threatening"]
-    tone: Literal["calm", "frustrated", "angry", "anxious", "appreciative", "demanding", "sarcastic"]
-    urgency: Literal["low", "medium", "high", "critical"]
-    sentimentScore: int = Field(..., ge=0, le=100)
-    queryType: str
-    churnRisk: int = Field(..., ge=0, le=100)
+    sentiment: str
+    tone: str
+    urgency: str
+    sentiment_score: int = Field(..., ge=0, le=100)
+    query_type: str
+    churn_risk: int = Field(..., ge=0, le=100)
+
+    @field_validator("sentiment")
+    @classmethod
+    def validate_sentiment(cls, v: str) -> str:
+        return v if v in _VALID_SENTIMENTS else "neutral"
+
+    @field_validator("tone")
+    @classmethod
+    def validate_tone(cls, v: str) -> str:
+        return v if v in _VALID_TONES else "calm"
+
+    @field_validator("urgency")
+    @classmethod
+    def validate_urgency(cls, v: str) -> str:
+        return v if v in _VALID_URGENCIES else "medium"
+
+    @field_validator("query_type")
+    @classmethod
+    def validate_query_type(cls, v: str) -> str:
+        return v if v in _VALID_QUERY_TYPES else "general-inquiry"
 
 
 class AnalyzeResponse(BaseModel):

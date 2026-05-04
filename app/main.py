@@ -34,30 +34,71 @@ from app.schemas import (
 logger = logging.getLogger(__name__)
 
 _ANALYZE_PROMPT = """\
-You are a customer support analysis assistant.
+You are a customer support analysis assistant. Analyze ONLY the customer message below and return a single JSON object. No explanation. No extra text.
 
-Analyze the following customer message and return ONLY a valid JSON object with exactly these 6 keys:
+## Rules
 
-- sentimentLabel (positive, neutral, negative, threatening)
-- tone (calm, frustrated, angry, anxious, appreciative, demanding, sarcastic)
-- urgency (low, medium, high, critical)
-- sentimentScore (integer 0-100)
-- queryType (one of: Order/Shipping Issue, Billing/Payment Issue, Product Defect, Account Access, General Inquiry, Refund/Return Request, Complaint, Compliment)
-- churnRisk (integer 0-100)
+**1. sentiment** — pick one: positive | neutral | negative | threatening
+- threatening: ANY mention of legal action, chargeback, refund dispute, authorities, or public exposure — ALWAYS overrides others
+- negative: frustration, complaints, dissatisfaction
+- neutral: factual, no emotion
+- positive: satisfaction, praise, thanks
 
-Customer message:
-\"\"\"
+**2. tone** — pick one: calm | frustrated | angry | anxious | appreciative | demanding | sarcastic
+- angry: insults, ALL CAPS, harsh or aggressive language
+- frustrated: complaint without aggression
+- demanding: direct commands ("fix this now", "send it immediately")
+- anxious: worry or fear ("I’m concerned", "getting nervous")
+- sarcastic: mockery or passive-aggressive language
+- appreciative: gratitude or positive acknowledgment
+- calm: composed, neutral delivery
+
+**3. urgency** — pick one: low | medium | high | critical
+- critical: deadline within 48 hours OR sentiment is threatening
+- high: explicitly mentions urgency (ASAP, urgent) OR is a repeated follow-up
+- medium: clear need, no urgency signals
+- low: informational only
+
+**4. sentiment_score** — integer 0–100
+- 0–20: threatening or extreme hostility
+- 21–35: strong negative (angry, multiple complaints)
+- 36–45: mild negative (frustrated, disappointed)
+- 46–54: neutral
+- 55–70: mild positive (polite, appreciative)
+- 71–100: strong positive (praise, very satisfied)
+
+**5. query_type** — pick one: order-status | shipping-delay | address-change | order-modification | order-hold | refund | billing | product-inquiry | restock-inquiry | damaged-item | warranty | technical-issue | general-inquiry
+- If multiple intents, pick the most urgent or irreversible
+- Refund or cancellation always overrides other intents
+
+**6. churn_risk** — integer 0–100, baseline 50
+- Add: threatening +30, refund/cancellation request +20, repeated issue +15, strong negative sentiment +20, mentions a competitor +10
+- Subtract: positive sentiment -15, appreciation -10
+- Clamp to 0–100
+
+## Customer Message
+
 {message}
-\"\"\"
 
-Return ONLY JSON. No explanations. No extra text."""
+## Output
+
+Return ONLY valid JSON, nothing else:
+{"sentiment": "", "tone": "", "urgency": "", "sentiment_score": 0, "query_type": "", "churn_risk": 0}
+"""
 
 
 def _extract_json(text: str) -> dict:
     """Strip markdown fences and parse JSON from model output."""
     clean = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
     clean = re.sub(r"\s*```$", "", clean.strip())
-    return json.loads(clean)
+    if not clean:
+        raise json.JSONDecodeError("Model returned empty response", text, 0)
+    # Find the JSON object boundaries in case there's surrounding text
+    start = clean.find("{")
+    end = clean.rfind("}") + 1
+    if start == -1 or end == 0:
+        raise json.JSONDecodeError("No JSON object found in response", clean, 0)
+    return json.loads(clean[start:end])
 
 
 @asynccontextmanager
@@ -146,7 +187,7 @@ async def analyze(request: AnalyzeRequest):
         raise HTTPException(status_code=503, detail="Model is not loaded")
 
     clean_message = preprocess_message(request.message)
-    prompt = _ANALYZE_PROMPT.format(message=clean_message)
+    prompt = _ANALYZE_PROMPT.replace("{message}", clean_message)
 
     active_requests.inc()
     start = time.perf_counter()

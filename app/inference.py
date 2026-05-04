@@ -96,10 +96,12 @@ class TransformersBackend(BaseInferenceBackend):
             add_generation_prompt=True,
         )
         input_ids = (tokenized.input_ids if hasattr(tokenized, "input_ids") else tokenized).to(self._device)
+        attention_mask = torch.ones_like(input_ids)
 
         with torch.no_grad():
             output_ids = self.model.generate(
                 input_ids,
+                attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,

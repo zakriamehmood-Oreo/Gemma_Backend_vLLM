@@ -7,12 +7,12 @@ from app.main import app, _extract_json
 from app.inference import gemma
 
 VALID_JSON = {
-    "sentimentLabel": "negative",
+    "sentiment": "negative",
     "tone": "frustrated",
     "urgency": "high",
-    "sentimentScore": 30,
-    "queryType": "Order/Shipping Issue",
-    "churnRisk": 75,
+    "sentiment_score": 30,
+    "query_type": "shipping-delay",
+    "churn_risk": 75,
 }
 
 VALID_RAW = json.dumps(VALID_JSON)
@@ -55,6 +55,20 @@ def test_extract_json_with_whitespace():
     assert _extract_json(f"  \n{VALID_RAW}\n  ") == VALID_JSON
 
 
+def test_extract_json_with_surrounding_text():
+    assert _extract_json(f"Here is the result:\n{VALID_RAW}\nDone.") == VALID_JSON
+
+
+def test_extract_json_empty_fences_raises():
+    with pytest.raises(json.JSONDecodeError):
+        _extract_json("```\n```")
+
+
+def test_extract_json_empty_string_raises():
+    with pytest.raises(json.JSONDecodeError):
+        _extract_json("")
+
+
 def test_extract_json_invalid_raises():
     with pytest.raises(json.JSONDecodeError):
         _extract_json("not json at all")
@@ -68,12 +82,12 @@ def test_analyze_success(client, loaded_model):
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["result"]["sentimentLabel"] == "negative"
+    assert data["result"]["sentiment"] == "negative"
     assert data["result"]["tone"] == "frustrated"
     assert data["result"]["urgency"] == "high"
-    assert data["result"]["sentimentScore"] == 30
-    assert data["result"]["queryType"] == "Order/Shipping Issue"
-    assert data["result"]["churnRisk"] == 75
+    assert data["result"]["sentiment_score"] == 30
+    assert data["result"]["query_type"] == "shipping-delay"
+    assert data["result"]["churn_risk"] == 75
     assert data["prompt_tokens"] == 50
     assert data["completion_tokens"] == 40
     assert data["raw_response"] == VALID_FENCED
@@ -102,15 +116,28 @@ def test_analyze_invalid_json_from_model(client, loaded_model):
     assert "invalid JSON" in resp.json()["detail"]
 
 
-def test_analyze_invalid_sentiment_label(client, loaded_model):
-    bad = {**VALID_JSON, "sentimentLabel": "confused"}
+def test_analyze_empty_fence_from_model(client, loaded_model):
+    with patch.object(gemma, "generate", return_value=("```\n```", 10, 5)):
+        resp = client.post("/analyze", json={"message": "test"})
+    assert resp.status_code == 422
+
+
+def test_analyze_invalid_sentiment(client, loaded_model):
+    bad = {**VALID_JSON, "sentiment": "confused"}
+    with patch.object(gemma, "generate", return_value=(json.dumps(bad), 10, 5)):
+        resp = client.post("/analyze", json={"message": "test"})
+    assert resp.status_code == 422
+
+
+def test_analyze_invalid_query_type(client, loaded_model):
+    bad = {**VALID_JSON, "query_type": "unknown-category"}
     with patch.object(gemma, "generate", return_value=(json.dumps(bad), 10, 5)):
         resp = client.post("/analyze", json={"message": "test"})
     assert resp.status_code == 422
 
 
 def test_analyze_score_out_of_range(client, loaded_model):
-    bad = {**VALID_JSON, "sentimentScore": 150}
+    bad = {**VALID_JSON, "sentiment_score": 150}
     with patch.object(gemma, "generate", return_value=(json.dumps(bad), 10, 5)):
         resp = client.post("/analyze", json={"message": "test"})
     assert resp.status_code == 422
