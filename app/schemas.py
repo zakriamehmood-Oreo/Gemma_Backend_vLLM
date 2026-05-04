@@ -19,6 +19,10 @@ class HealthResponse(BaseModel):
     status: str
     model_id: str
     model_loaded: bool
+    active_requests: int
+    queued_requests: int
+    max_concurrent: int
+    max_queue_depth: int
 
 
 class AnalyzeRequest(BaseModel):

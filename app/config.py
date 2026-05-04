@@ -20,5 +20,9 @@ class Settings(BaseSettings):
     # Leave empty to disable auth (local dev). Set a strong value in production.
     api_key: str = ""
 
+    # Concurrency: max requests processed at once; rest queue up to max_queue_depth
+    max_concurrent: int = 10
+    max_queue_depth: int = 50
+
 
 settings = Settings()

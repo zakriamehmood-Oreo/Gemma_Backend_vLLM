@@ -42,3 +42,9 @@ model_loaded_gauge = Gauge(
     "gemma_model_loaded",
     "Whether the model is loaded and ready (1=yes, 0=no)",
 )
+
+# Requests waiting to acquire a concurrency slot
+queued_requests = Gauge(
+    "gemma_queued_requests",
+    "Requests waiting in queue for a concurrency slot",
+)
