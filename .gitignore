@@ -10,7 +10,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-.eggs/
+.eggs
+
 venv/
 .venv/
 env/
@@ -33,3 +34,8 @@ server_err*.txt
 # os
 .DS_Store
 Thumbs.db
+
+# Jupyter
+.ipynb
+.csv
+*_batch.py
