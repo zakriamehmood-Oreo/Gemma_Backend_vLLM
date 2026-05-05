@@ -5,6 +5,8 @@ import re
 import time
 from contextlib import asynccontextmanager
 
+logging.basicConfig(level=logging.INFO)
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
@@ -212,6 +214,11 @@ async def generate(request: GenerateRequest):
         completion_tokens_total.inc(completion_tokens)
         tokens_per_second.observe(completion_tokens / duration if duration > 0 else 0)
         requests_total.labels(status="success").inc()
+        logger.info(
+            "endpoint=/generate status=success inference_duration=%.3f "
+            "prompt_tokens=%d completion_tokens=%d",
+            duration, prompt_tokens, completion_tokens,
+        )
 
         return GenerateResponse(
             response=response_text,
@@ -253,6 +260,11 @@ async def analyze(request: AnalyzeRequest):
         completion_tokens_total.inc(completion_tokens)
         tokens_per_second.observe(completion_tokens / duration if duration > 0 else 0)
         requests_total.labels(status="success").inc()
+        logger.info(
+            "endpoint=/analyze status=success inference_duration=%.3f "
+            "prompt_tokens=%d completion_tokens=%d",
+            duration, prompt_tokens, completion_tokens,
+        )
 
         try:
             parsed = _extract_json(raw_text)
