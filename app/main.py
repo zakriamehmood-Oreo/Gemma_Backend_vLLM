@@ -1,7 +1,10 @@
 import asyncio
+import csv
 import json
 import logging
+import pathlib
 import re
+import threading
 import time
 from contextlib import asynccontextmanager
 
@@ -38,6 +41,24 @@ logger = logging.getLogger(__name__)
 
 _semaphore: asyncio.Semaphore | None = None
 _waiting: int = 0
+
+_CSV_PATH = pathlib.Path("/data/analyze_results.csv")
+_CSV_LOCK = threading.Lock()
+_CSV_FIELDS = [
+    "timestamp", "preprocessed_message",
+    "sentiment", "tone", "urgency", "sentiment_score", "query_type", "churn_risk",
+    "prompt_tokens", "completion_tokens", "inference_duration_seconds",
+]
+
+
+def _append_csv(row: dict):
+    with _CSV_LOCK:
+        write_header = not _CSV_PATH.exists()
+        with _CSV_PATH.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
 
 
 @asynccontextmanager
@@ -275,6 +296,15 @@ async def analyze(request: AnalyzeRequest):
                 status_code=422,
                 detail=f"Model returned invalid JSON: {e}. Raw: {raw_text!r}",
             )
+
+        _append_csv({
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "preprocessed_message": clean_message,
+            **result.model_dump(),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "inference_duration_seconds": round(duration, 3),
+        })
 
         return AnalyzeResponse(
             result=result,

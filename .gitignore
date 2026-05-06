@@ -12,6 +12,9 @@ dist/
 build/
 .eggs
 
+# special file
+gemma-startup.service.txt
+
 venv/
 .venv/
 env/
