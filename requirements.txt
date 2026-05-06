@@ -17,4 +17,4 @@ sentencepiece==0.2.0
 
 # vLLM backend (production/Linux+GPU only)
 # Uncomment on the cloud instance — do NOT install on Windows
-# vllm>=0.4.0
+vllm>=0.4.0

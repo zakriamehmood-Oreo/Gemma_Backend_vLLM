@@ -33,8 +33,8 @@ active_requests = Gauge(
 # Request outcomes
 requests_total = Counter(
     "gemma_requests_total",
-    "Total /generate requests by outcome",
-    ["status"],  # success | error | model_not_loaded
+    "Total requests by endpoint and outcome",
+    ["status", "endpoint"],  # endpoint: analyze | generate
 )
 
 # 1 when model is loaded, 0 when not

@@ -45,7 +45,7 @@ async def _concurrency_slot():
     """Acquire a concurrency slot; queue if full; reject if queue is full."""
     global _waiting
     if _waiting >= settings.max_queue_depth:
-        requests_total.labels(status="queue_full").inc()
+        requests_total.labels(status="queue_full", endpoint="unknown").inc()
         raise HTTPException(
             status_code=429,
             detail=(
@@ -187,7 +187,7 @@ def health():
 @app.post("/generate", response_model=GenerateResponse, dependencies=[Depends(verify_api_key)])
 async def generate(request: GenerateRequest):
     if not gemma.is_loaded:
-        requests_total.labels(status="model_not_loaded").inc()
+        requests_total.labels(status="model_not_loaded", endpoint="generate").inc()
         raise HTTPException(status_code=503, detail="Model is not loaded")
 
     async with _concurrency_slot():
@@ -204,7 +204,7 @@ async def generate(request: GenerateRequest):
                 ),
             )
         except Exception as e:
-            requests_total.labels(status="error").inc()
+            requests_total.labels(status="error", endpoint="generate").inc()
             logger.exception("Generation failed")
             raise HTTPException(status_code=500, detail=repr(e))
 
@@ -213,7 +213,7 @@ async def generate(request: GenerateRequest):
         prompt_tokens_total.inc(prompt_tokens)
         completion_tokens_total.inc(completion_tokens)
         tokens_per_second.observe(completion_tokens / duration if duration > 0 else 0)
-        requests_total.labels(status="success").inc()
+        requests_total.labels(status="success", endpoint="generate").inc()
         logger.info(
             "endpoint=/generate status=success inference_duration=%.3f "
             "prompt_tokens=%d completion_tokens=%d",
@@ -230,7 +230,7 @@ async def generate(request: GenerateRequest):
 @app.post("/analyze", response_model=AnalyzeResponse, dependencies=[Depends(verify_api_key)])
 async def analyze(request: AnalyzeRequest):
     if not gemma.is_loaded:
-        requests_total.labels(status="model_not_loaded").inc()
+        requests_total.labels(status="model_not_loaded", endpoint="analyze").inc()
         raise HTTPException(status_code=503, detail="Model is not loaded")
 
     clean_message = preprocess_message(request.message)
@@ -250,7 +250,7 @@ async def analyze(request: AnalyzeRequest):
                 ),
             )
         except Exception as e:
-            requests_total.labels(status="error").inc()
+            requests_total.labels(status="error", endpoint="analyze").inc()
             logger.exception("Analysis generation failed")
             raise HTTPException(status_code=500, detail=repr(e))
 
@@ -259,7 +259,7 @@ async def analyze(request: AnalyzeRequest):
         prompt_tokens_total.inc(prompt_tokens)
         completion_tokens_total.inc(completion_tokens)
         tokens_per_second.observe(completion_tokens / duration if duration > 0 else 0)
-        requests_total.labels(status="success").inc()
+        requests_total.labels(status="success", endpoint="analyze").inc()
         logger.info(
             "endpoint=/analyze status=success inference_duration=%.3f "
             "prompt_tokens=%d completion_tokens=%d",

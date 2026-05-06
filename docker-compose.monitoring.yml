@@ -55,6 +55,17 @@ services:
       - loki
     restart: unless-stopped
 
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.0-ubuntu22.04
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "9400:9400"
+    cap_add:
+      - SYS_ADMIN
+    restart: unless-stopped
+
 volumes:
   grafana_data:
   loki_data:
