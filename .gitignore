@@ -13,7 +13,7 @@ build/
 .eggs
 
 # special file
-gemma-startup.service.txt
+gemma-startup.service
 
 venv/
 .venv/
