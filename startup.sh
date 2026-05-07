@@ -88,25 +88,24 @@ sudo docker compose -f "$APP_DIR/docker-compose.monitoring.yml" up -d
 success "Monitoring stack started"
 
 # =============================================================================
-# STEP 6 — Start Gemma API
+# STEP 6 — Start Gemma API container
 # =============================================================================
-info "Starting Gemma API..."
+info "Starting Gemma API container..."
 
-# Kill any stale process
-if pgrep -f 'uvicorn app.main' > /dev/null; then
-    warn "Stale uvicorn process found — killing it"
-    pkill -f 'uvicorn app.main' || true
-    sleep 2
-fi
+# Remove any stopped gemma-api container so docker run won't conflict
+sudo docker rm -f gemma-api 2>/dev/null || true
 
-cd "$APP_DIR"
-HF_HOME="$HF_CACHE" nohup "$VENV/bin/uvicorn" app.main:app \
-    --host 0.0.0.0 --port 8000 \
-    >> "$LOG_FILE" 2>&1 &
+sudo docker run -d \
+    --name gemma-api \
+    --gpus all \
+    -p 8000:8000 \
+    --env-file "$APP_DIR/.env" \
+    -v "$HF_CACHE:$HF_CACHE" \
+    -v /data:/data \
+    --restart unless-stopped \
+    gemma-api:latest
 
-API_PID=$!
-echo "$API_PID" > /tmp/gemma-api.pid
-success "Gemma API started (PID: $API_PID)"
+success "Gemma API container started"
 
 # =============================================================================
 # STEP 7 — Health check
