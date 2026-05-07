@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class GenerateRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, description="The input prompt for the model")
+    prompt: str = Field(..., min_length=1, max_length=10000, description="The input prompt for the model")
     max_new_tokens: int | None = Field(None, gt=0, le=4096)
     temperature: float | None = Field(None, gt=0.0, le=2.0)
     top_p: float | None = Field(None, gt=0.0, le=1.0)
@@ -17,16 +17,13 @@ class GenerateResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-    model_id: str
     model_loaded: bool
     active_requests: int
     queued_requests: int
-    max_concurrent: int
-    max_queue_depth: int
 
 
 class AnalyzeRequest(BaseModel):
-    message: str = Field(..., min_length=1, description="Raw customer message to analyze")
+    message: str = Field(..., min_length=1, max_length=5000, description="Raw customer message to analyze")
     max_new_tokens: int | None = Field(None, gt=0, le=512)
 
 

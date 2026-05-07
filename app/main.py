@@ -8,6 +8,10 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response
+
 logging.basicConfig(level=logging.INFO)
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -179,16 +183,41 @@ app = FastAPI(
     title="Gemma 4 Inference API",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
+
+# Strip the Server header so we don't advertise the tech stack
+class _StripServerHeader(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next) -> Response:
+        response = await call_next(request)
+        response.headers["server"] = "api"
+        return response
+
+app.add_middleware(_StripServerHeader)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[o.strip() for o in settings.allowed_origins.split(",")],
+    allow_methods=["POST", "GET"],
+    allow_headers=["X-API-Key", "Content-Type"],
 )
 
-app.mount("/metrics", make_asgi_app())
+# Metrics endpoint protected by API key
+metrics_app = make_asgi_app()
+
+async def _protected_metrics(scope, receive, send):
+    request = StarletteRequest(scope, receive)
+    key = request.headers.get("X-API-Key", "")
+    bearer = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if settings.api_key and key != settings.api_key and bearer != settings.api_key:
+        response = Response("Unauthorized", status_code=401)
+        await response(scope, receive, send)
+        return
+    await metrics_app(scope, receive, send)
+
+app.mount("/metrics", _protected_metrics)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -196,12 +225,9 @@ def health():
     slots_in_use = settings.max_concurrent - (_semaphore._value if _semaphore else 0)
     return HealthResponse(
         status="ok",
-        model_id=settings.model_id,
         model_loaded=gemma.is_loaded,
         active_requests=max(slots_in_use, 0),
         queued_requests=_waiting,
-        max_concurrent=settings.max_concurrent,
-        max_queue_depth=settings.max_queue_depth,
     )
 
 

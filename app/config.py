@@ -24,5 +24,8 @@ class Settings(BaseSettings):
     max_concurrent: int = 10
     max_queue_depth: int = 50
 
+    # CORS: comma-separated list of allowed origins. Use * only in local dev.
+    allowed_origins: str = "*"
+
 
 settings = Settings()
