@@ -2,7 +2,7 @@
 
 A production-ready FastAPI inference server for Google Gemma 4 E2B-it that classifies customer support messages into 6 structured outputs: sentiment, tone, urgency, sentiment score, query type, and churn risk.
 
-Runs fully containerized on GPU (NVIDIA T4), with Prometheus + Grafana + Loki monitoring and auto-restart on reboot via systemd.
+Runs fully containerised on GPU (NVIDIA T4), with Prometheus + Grafana + Loki monitoring and auto-restart on reboot via systemd.
 
 ---
 
