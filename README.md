@@ -17,7 +17,7 @@ Brute force check  (10 wrong keys / 60s → IP blocked for 5 min)
       ↓
 Concurrency queue  (max 10 active, up to 50 waiting, 429 if full)
       ↓
-Gemma 4 E2B-it  (Transformers backend on GPU)
+Gemma 4 E2B-it  (Transformers backend on GPU, greedy decoding for /analyze)
       ↓
 JSON parser + Pydantic validation
       ↓
@@ -45,14 +45,14 @@ Gemma_Backend_vLLM/
 │   ├── prometheus.yml        # Scrape config (gemma_api, node, gpu)
 │   └── promtail.yml          # Log shipper config for Loki
 ├── tests/
-│   ├── test_analyze.py
+│   ├── test_api.py
 │   └── test_auth.py
 ├── Dockerfile                # Container image for the API
 ├── docker-compose.yml        # All services in one file (API + monitoring)
 ├── docker-compose.monitoring.yml  # Monitoring stack only
-├── startup.sh                # Boot script (mount disk, start containers)
-├── gemma-startup.service     # systemd unit — runs startup.sh on every reboot
-├── deploy.sh                 # One-shot cloud deployment script
+├── startup.sh                # Boot script (mount disk, start containers) — run by systemd
+├── gemma-startup.service     # systemd unit that runs startup.sh on every reboot
+├── deploy.sh                 # One-shot fresh-machine deployment script
 ├── .env.example              # Template — copy to .env and fill in values
 └── requirements.txt
 ```
@@ -112,14 +112,16 @@ curl -X POST http://YOUR_SERVER_IP:8000/analyze \
     "urgency": "high",
     "sentiment_score": 36,
     "query_type": "order-status",
-    "churn_risk": 55
+    "churn_risk": 55,
+    "model_warnings": []
   },
   "prompt_tokens": 618,
   "completion_tokens": 49,
-  "raw_response": "...",
   "preprocessed_message": "I have been waiting 3 weeks..."
 }
 ```
+
+> `model_warnings` is an empty list in normal operation. If the model returns an invalid value for a field (e.g. an unrecognised tone), the field is substituted with a safe default and a description is added to `model_warnings` so callers can detect it.
 
 **Field values:**
 
@@ -169,7 +171,7 @@ curl -X POST http://YOUR_SERVER_IP:8000/generate \
 Prometheus metrics. Requires API key.
 
 ```bash
-curl http://YOUR_SERVER_IP:8000/metrics/ \
+curl http://YOUR_SERVER_IP:8000/metrics \
   -H "X-API-Key: your-api-key"
 ```
 
@@ -191,7 +193,8 @@ curl http://YOUR_SERVER_IP:8000/metrics/ \
 - **API docs disabled** — `/docs`, `/redoc`, `/openapi.json` return 404 in production
 - **Brute force protection** — 10 failed auth attempts per 60s blocks the IP for 5 minutes
 - **Message size limit** — `/analyze` max 5000 chars, `/generate` max 10,000 chars
-- **Metrics auth** — `/metrics` requires the same API key
+- **Metrics auth** — `/metrics` requires the same API key (constant-time comparison)
+- **Sanitised errors** — internal exceptions never leak stack traces or model output to callers
 - **Server header hidden** — responds as `server: api`, not `server: uvicorn`
 - **CORS** — controlled via `ALLOWED_ORIGINS` env var (set to your frontend domain in production)
 
@@ -202,6 +205,8 @@ curl http://YOUR_SERVER_IP:8000/metrics/ \
 Every successful `/analyze` call is appended to `/data/analyze_results.csv` on the mounted drive.
 
 Columns: `timestamp`, `preprocessed_message`, `sentiment`, `tone`, `urgency`, `sentiment_score`, `query_type`, `churn_risk`, `prompt_tokens`, `completion_tokens`, `inference_duration_seconds`
+
+The CSV is written asynchronously and never included in API responses — it lives only on the data drive.
 
 ---
 
@@ -216,15 +221,37 @@ Columns: `timestamp`, `preprocessed_message`, `sentiment`, `tone`, `urgency`, `s
 | OS | Ubuntu 22.04 LTS |
 | Storage | 100 GB NVMe attached at `/data` |
 
-### One-command deploy
+### Scripts — what each one does
+
+There are three scripts. Each has a distinct role. **Do not confuse them.**
+
+| Script | When to use | What it does |
+|---|---|---|
+| `deploy.sh` | Once, on a fresh machine | Installs Docker, builds the image, writes `.env`, installs the systemd service, starts everything |
+| `startup.sh` | Every reboot (run by systemd automatically) | Mounts `/data`, loads the NVIDIA kernel module, starts the monitoring stack and the API container |
+| `gemma-startup.service` | Installed once by `deploy.sh` | systemd unit file that calls `startup.sh` on boot — you never run this directly |
+
+### One-command deploy (fresh machine)
 
 ```bash
+# 1. Edit the top of deploy.sh — set REPO_URL, HF_TOKEN, API_KEY, GRAFANA_PASSWORD
+nano deploy.sh
+
+# 2. Run it
 bash deploy.sh
 ```
 
-This script handles: system packages, disk mount, Python venv, `.env` setup, model pre-download, Docker + monitoring stack, systemd service, and health check.
+`deploy.sh` does everything end-to-end:
+- Installs Docker and NVIDIA Container Toolkit
+- Clones the repo into `/data/Gemma_Backend_vLLM`
+- Writes a `.env` file with your credentials
+- Builds the `gemma-api:latest` Docker image
+- Installs `gemma-startup.service` into systemd and enables it
+- Calls `startup.sh` to start all services immediately
 
-### Manual steps
+After this, **every reboot is fully automatic** — no manual steps needed.
+
+### Manual steps (if you prefer step-by-step)
 
 **1. Clone the repo**
 ```bash
@@ -244,22 +271,27 @@ HF_TOKEN=hf_your_token_here
 INFERENCE_BACKEND=transformers
 API_KEY=your-strong-secret-key
 ALLOWED_ORIGINS=https://yourdomain.com
+GRAFANA_PASSWORD=your-grafana-password
 ```
 
-**3. Build and run with Docker**
+**3. Build the Docker image**
 ```bash
 docker build -t gemma-api:latest .
-docker compose up -d
 ```
 
-**4. Register the startup service**
+**4. Install the systemd service**
 ```bash
 sudo cp gemma-startup.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable gemma-startup
 ```
 
-From this point, all services start automatically on every reboot.
+**5. Start everything now**
+```bash
+bash startup.sh
+```
+
+From this point, all services restart automatically on every reboot.
 
 ### Boot sequence (automatic after setup)
 
@@ -268,14 +300,13 @@ Server reboots
       ↓
 /data auto-mounts (fstab UUID entry)
       ↓
-Docker daemon starts → restarts all containers (unless-stopped policy)
-      ↓
 gemma-startup.service runs startup.sh
-→ loads NVIDIA module
-→ starts monitoring stack
-→ starts gemma-api container
+→ checks /data mount
+→ loads NVIDIA kernel module
+→ starts monitoring stack (Prometheus, Grafana, Loki, Node Exporter, DCGM)
+→ starts gemma-api container  ← Docker also auto-restarts it via restart:unless-stopped
       ↓
-All services live in ~40 seconds
+All services live in ~40 seconds (model is already cached)
 ```
 
 ---
@@ -285,32 +316,37 @@ All services live in ~40 seconds
 | Service | URL | Description |
 |---|---|---|
 | Gemma API | `http://YOUR_IP:8000` | Inference API |
-| Grafana | `http://YOUR_IP:3000` | Dashboards (admin / admin) |
+| Grafana | `http://YOUR_IP:3000` | Dashboards |
 | Prometheus | `http://YOUR_IP:9090` | Metrics store |
 | Loki | `http://YOUR_IP:3100` | Log store |
 
 ### Start / stop commands
 
 ```bash
-# Start everything
-cd /data/Gemma_Backend_vLLM && docker compose up -d
-
-# Stop everything
-docker compose down
-
-# Restart API only
-docker restart gemma-api
+# Check what's running
+docker ps
 
 # View API logs live
 docker logs -f gemma-api
 
-# Check all container status
-docker ps
+# Restart API only
+docker restart gemma-api
+
+# Start monitoring stack
+cd /data/Gemma_Backend_vLLM && docker compose -f docker-compose.monitoring.yml up -d
+
+# Stop monitoring stack
+docker compose -f docker-compose.monitoring.yml down
+
+# Start all services manually (same as boot)
+bash /data/Gemma_Backend_vLLM/startup.sh
 ```
 
 ---
 
 ## Monitoring (Grafana)
+
+Login: `admin` / `<GRAFANA_PASSWORD from .env>`
 
 Data sources: `http://prometheus:9090` and `http://loki:3100`
 
@@ -351,10 +387,13 @@ Data sources: `http://prometheus:9090` and `http://loki:3100`
 | `LOAD_IN_4BIT` | `false` | 4-bit quantization (requires bitsandbytes CUDA build) |
 | `HOST` | `0.0.0.0` | Bind address |
 | `PORT` | `8000` | Bind port |
-| `API_KEY` | _(empty)_ | Auth key — empty disables auth (local dev only) |
+| `API_KEY` | _(required)_ | Auth key — never leave empty in production |
+| `ALLOW_NO_AUTH` | `false` | Set `true` only for local dev with no API key |
 | `MAX_CONCURRENT` | `10` | Max simultaneous requests |
 | `MAX_QUEUE_DEPTH` | `50` | Max requests allowed to queue before 429 |
 | `ALLOWED_ORIGINS` | `*` | CORS origins — set to your domain in production |
+| `GRAFANA_PASSWORD` | `changeme` | Grafana admin password |
+| `TRUST_PROXY` | `false` | Set `true` if behind a reverse proxy (enables X-Forwarded-For) |
 
 ---
 
@@ -373,7 +412,8 @@ py -3.11 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 Set in `.env` for local:
 ```
 INFERENCE_BACKEND=transformers
-API_KEY=                        # leave empty — auth disabled locally
+API_KEY=
+ALLOW_NO_AUTH=true
 ```
 
 ---

@@ -4,6 +4,7 @@ import json
 import logging
 import pathlib
 import re
+import secrets
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -45,6 +46,11 @@ logger = logging.getLogger(__name__)
 
 _semaphore: asyncio.Semaphore | None = None
 _waiting: int = 0
+_active: int = 0  # explicit counter — avoids touching private asyncio internals
+
+# Compiled once at import time
+_RE_FENCE_OPEN = re.compile(r"^```(?:json)?\s*", re.IGNORECASE)
+_RE_FENCE_CLOSE = re.compile(r"\s*```$")
 
 _CSV_PATH = pathlib.Path("/data/analyze_results.csv")
 _CSV_LOCK = threading.Lock()
@@ -53,6 +59,15 @@ _CSV_FIELDS = [
     "sentiment", "tone", "urgency", "sentiment_score", "query_type", "churn_risk",
     "prompt_tokens", "completion_tokens", "inference_duration_seconds",
 ]
+
+_SENTIMENT_VALID = {"positive", "neutral", "negative", "threatening"}
+_TONE_VALID = {"calm", "frustrated", "angry", "anxious", "appreciative", "demanding", "sarcastic"}
+_URGENCY_VALID = {"low", "medium", "high", "critical"}
+_QUERY_VALID = {
+    "order-status", "shipping-delay", "address-change", "order-modification",
+    "order-hold", "refund", "billing", "product-inquiry", "restock-inquiry",
+    "damaged-item", "warranty", "technical-issue", "general-inquiry",
+}
 
 
 def _append_csv(row: dict):
@@ -67,16 +82,12 @@ def _append_csv(row: dict):
 
 @asynccontextmanager
 async def _concurrency_slot():
-    """Acquire a concurrency slot; queue if full; reject if queue is full."""
-    global _waiting
+    global _waiting, _active
     if _waiting >= settings.max_queue_depth:
         requests_total.labels(status="queue_full", endpoint="unknown").inc()
         raise HTTPException(
             status_code=429,
-            detail=(
-                f"Server queue is full ({_waiting} requests waiting). "
-                "Try again shortly."
-            ),
+            detail=f"Server queue is full ({_waiting} requests waiting). Try again shortly.",
         )
     _waiting += 1
     queued_requests.set(_waiting)
@@ -85,12 +96,14 @@ async def _concurrency_slot():
         await _semaphore.acquire()
         acquired = True
         _waiting -= 1
+        _active += 1
         queued_requests.set(_waiting)
-        active_requests.inc()
+        active_requests.set(_active)
         yield
     finally:
         if acquired:
-            active_requests.dec()
+            _active -= 1
+            active_requests.set(_active)
             _semaphore.release()
         else:
             _waiting -= 1
@@ -211,7 +224,10 @@ async def _protected_metrics(scope, receive, send):
     request = StarletteRequest(scope, receive)
     key = request.headers.get("X-API-Key", "")
     bearer = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    if settings.api_key and key != settings.api_key and bearer != settings.api_key:
+    if settings.api_key and (
+        not secrets.compare_digest(key or "", settings.api_key)
+        and not secrets.compare_digest(bearer, settings.api_key)
+    ):
         response = Response("Unauthorized", status_code=401)
         await response(scope, receive, send)
         return
@@ -222,11 +238,10 @@ app.mount("/metrics", _protected_metrics)
 
 @app.get("/health", response_model=HealthResponse)
 def health():
-    slots_in_use = settings.max_concurrent - (_semaphore._value if _semaphore else 0)
     return HealthResponse(
         status="ok",
         model_loaded=gemma.is_loaded,
-        active_requests=max(slots_in_use, 0),
+        active_requests=_active,
         queued_requests=_waiting,
     )
 
@@ -253,7 +268,7 @@ async def generate(request: GenerateRequest):
         except Exception as e:
             requests_total.labels(status="error", endpoint="generate").inc()
             logger.exception("Generation failed")
-            raise HTTPException(status_code=500, detail=repr(e))
+            raise HTTPException(status_code=500, detail="Inference error")
 
         duration = time.perf_counter() - start
         inference_duration_seconds.observe(duration)
@@ -299,7 +314,7 @@ async def analyze(request: AnalyzeRequest):
         except Exception as e:
             requests_total.labels(status="error", endpoint="analyze").inc()
             logger.exception("Analysis generation failed")
-            raise HTTPException(status_code=500, detail=repr(e))
+            raise HTTPException(status_code=500, detail="Inference error")
 
         duration = time.perf_counter() - start
         inference_duration_seconds.observe(duration)
@@ -318,24 +333,35 @@ async def analyze(request: AnalyzeRequest):
             result = AnalysisResult(**parsed)
         except (json.JSONDecodeError, ValueError) as e:
             logger.error("Failed to parse model JSON output: %s | raw: %s", e, raw_text)
-            raise HTTPException(
-                status_code=422,
-                detail=f"Model returned invalid JSON: {e}. Raw: {raw_text!r}",
-            )
+            raise HTTPException(status_code=422, detail="Model output could not be parsed")
 
-        _append_csv({
+        # Detect which fields were substituted by validators and record warnings
+        warnings: list[str] = []
+        raw_parsed = parsed  # before validator substitution
+        if raw_parsed.get("sentiment") not in _SENTIMENT_VALID:
+            warnings.append(f"sentiment substituted: {raw_parsed.get('sentiment')!r} → 'neutral'")
+        if raw_parsed.get("tone") not in _TONE_VALID:
+            warnings.append(f"tone substituted: {raw_parsed.get('tone')!r} → 'calm'")
+        if raw_parsed.get("urgency") not in _URGENCY_VALID:
+            warnings.append(f"urgency substituted: {raw_parsed.get('urgency')!r} → 'medium'")
+        if raw_parsed.get("query_type") not in _QUERY_VALID:
+            warnings.append(f"query_type substituted: {raw_parsed.get('query_type')!r} → 'general-inquiry'")
+        if warnings:
+            result.model_warnings = warnings
+
+        row = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "preprocessed_message": clean_message,
-            **result.model_dump(),
+            **result.model_dump(exclude={"model_warnings"}),
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "inference_duration_seconds": round(duration, 3),
-        })
+        }
+        await loop.run_in_executor(None, _append_csv, row)
 
         return AnalyzeResponse(
             result=result,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            raw_response=raw_text,
             preprocessed_message=clean_message,
         )

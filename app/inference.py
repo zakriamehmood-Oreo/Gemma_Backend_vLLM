@@ -98,14 +98,15 @@ class TransformersBackend(BaseInferenceBackend):
         input_ids = (tokenized.input_ids if hasattr(tokenized, "input_ids") else tokenized).to(self._device)
         attention_mask = torch.ones_like(input_ids)
 
+        greedy = temperature <= 0.1
         with torch.no_grad():
             output_ids = self.model.generate(
                 input_ids,
                 attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                do_sample=True,
+                temperature=None if greedy else temperature,
+                top_p=None if greedy else top_p,
+                do_sample=not greedy,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
 
@@ -162,7 +163,12 @@ class VLLMBackend(BaseInferenceBackend):
             add_generation_prompt=True,
         )
 
-        params = SamplingParams(max_tokens=max_new_tokens, temperature=temperature, top_p=top_p)
+        greedy = temperature <= 0.1
+        params = SamplingParams(
+            max_tokens=max_new_tokens,
+            temperature=0.0 if greedy else temperature,
+            top_p=1.0 if greedy else top_p,
+        )
         outputs = self.llm.generate([formatted], params)
 
         result = outputs[0]
