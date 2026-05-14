@@ -48,3 +48,10 @@ queued_requests = Gauge(
     "gemma_queued_requests",
     "Requests waiting in queue for a concurrency slot",
 )
+
+# All-time analyze success count — initialized from CSV on startup so it
+# survives container restarts without resetting to 0
+analyze_success_total = Gauge(
+    "gemma_analyze_success_total",
+    "All-time successful /analyze calls (persisted via CSV, survives restarts)",
+)

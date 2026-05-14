@@ -25,6 +25,7 @@ from app.config import settings
 from app.inference import gemma
 from app.metrics import (
     active_requests,
+    analyze_success_total,
     completion_tokens_total,
     inference_duration_seconds,
     model_loaded_gauge,
@@ -177,10 +178,26 @@ def _extract_json(text: str) -> dict:
     return json.loads(clean[start:end])
 
 
+def _csv_row_count() -> int:
+    """Count data rows in the CSV (excludes header). Returns 0 if file missing."""
+    try:
+        with _CSV_PATH.open("r", encoding="utf-8") as f:
+            # subtract 1 for the header row; max 0 in case file is empty
+            return max(sum(1 for _ in f) - 1, 0)
+    except FileNotFoundError:
+        return 0
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _semaphore
     _semaphore = asyncio.Semaphore(settings.max_concurrent)
+
+    # Seed the persistent analyze counter from the CSV so it survives restarts
+    prior_count = _csv_row_count()
+    analyze_success_total.set(prior_count)
+    logger.info("Seeded gemma_analyze_success_total from CSV: %d", prior_count)
+
     try:
         gemma.load()
         model_loaded_gauge.set(1)
@@ -358,6 +375,7 @@ async def analyze(request: AnalyzeRequest):
             "inference_duration_seconds": round(duration, 3),
         }
         await loop.run_in_executor(None, _append_csv, row)
+        analyze_success_total.inc()
 
         return AnalyzeResponse(
             result=result,
