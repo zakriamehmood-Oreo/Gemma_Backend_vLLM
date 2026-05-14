@@ -12,9 +12,6 @@ dist/
 build/
 .eggs
 
-# special file
-gemma-startup.service
-
 venv/
 .venv/
 env/
@@ -33,6 +30,7 @@ server_err*.txt
 # ide
 .vscode/
 .idea/
+.claude/
 
 # os
 .DS_Store
@@ -42,6 +40,4 @@ Thumbs.db
 .ipynb
 .csv
 *_batch.py
-
-
-practise.ipynb
+.service
