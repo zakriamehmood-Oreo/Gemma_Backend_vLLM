@@ -14,10 +14,10 @@ scrape_configs:
           - localhost
         labels:
           job: gemma_api
-          __path__: /var/log/api.log
+          __path__: /var/log/gemma/api.log
     pipeline_stages:
       - regex:
-          expression: '.*inference_duration=(?P<inference_duration>[0-9.]+).*endpoint=(?P<endpoint>\S+).*status=(?P<status>\S+)'
+          expression: '.*endpoint=(?P<endpoint>\S+) status=(?P<status>\S+) inference_duration=(?P<inference_duration>[0-9.]+)'
       - labels:
           endpoint:
           status:

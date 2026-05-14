@@ -6,7 +6,7 @@ scrape_configs:
     metrics_path: /metrics/
     authorization:
       type: Bearer
-      credentials: sk_test_9f3KxL2vQ7mA8pZ1dR6uT4yHcN0bW5eJ
+      credentials_file: /etc/prometheus/api_key
     static_configs:
       - targets: ["host.docker.internal:8000"]
 

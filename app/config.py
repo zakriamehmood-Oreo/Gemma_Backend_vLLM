@@ -27,5 +27,14 @@ class Settings(BaseSettings):
     # CORS: comma-separated list of allowed origins. Use * only in local dev.
     allowed_origins: str = "*"
 
+    # Set true to allow running with no API_KEY (local dev only)
+    allow_no_auth: bool = False
+
+    # Set true when behind a reverse proxy — enables X-Forwarded-For for real IP
+    trust_proxy: bool = False
+
+    # Grafana admin password (used by docker-compose.monitoring.yml)
+    grafana_password: str = "changeme"
+
 
 settings = Settings()

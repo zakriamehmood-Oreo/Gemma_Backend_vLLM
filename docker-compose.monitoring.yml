@@ -3,10 +3,16 @@ services:
     image: prom/prometheus:latest
     ports:
       - "9090:9090"
+    environment:
+      - API_KEY=${API_KEY}
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'echo -n "$$API_KEY" > /etc/prometheus/api_key && chmod 600 /etc/prometheus/api_key && /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus'
     restart: unless-stopped
 
   grafana:
@@ -14,7 +20,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-changeme}
       - GF_FEATURE_TOGGLES_ENABLE=lokiExploreLogsPanel
     volumes:
       - grafana_data:/var/lib/grafana
@@ -50,7 +56,7 @@ services:
   promtail:
     image: grafana/promtail:latest
     volumes:
-      - /data/api.log:/var/log/api.log:ro
+      - /data:/var/log/gemma:ro
       - ./monitoring/promtail.yml:/etc/promtail/config.yml
     command: -config.file=/etc/promtail/config.yml
     depends_on:

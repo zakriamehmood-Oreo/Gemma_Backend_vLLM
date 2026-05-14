@@ -1,4 +1,3 @@
-from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -44,31 +43,40 @@ class AnalysisResult(BaseModel):
     sentiment_score: int = Field(..., ge=0, le=100)
     query_type: str
     churn_risk: int = Field(..., ge=0, le=100)
+    model_warnings: list[str] = Field(default_factory=list, description="Fields substituted due to invalid model output")
 
     @field_validator("sentiment")
     @classmethod
     def validate_sentiment(cls, v: str) -> str:
-        return v if v in _VALID_SENTIMENTS else "neutral"
+        if v not in _VALID_SENTIMENTS:
+            # warning recorded in main.py after construction
+            return "neutral"
+        return v
 
     @field_validator("tone")
     @classmethod
     def validate_tone(cls, v: str) -> str:
-        return v if v in _VALID_TONES else "calm"
+        if v not in _VALID_TONES:
+            return "calm"
+        return v
 
     @field_validator("urgency")
     @classmethod
     def validate_urgency(cls, v: str) -> str:
-        return v if v in _VALID_URGENCIES else "medium"
+        if v not in _VALID_URGENCIES:
+            return "medium"
+        return v
 
     @field_validator("query_type")
     @classmethod
     def validate_query_type(cls, v: str) -> str:
-        return v if v in _VALID_QUERY_TYPES else "general-inquiry"
+        if v not in _VALID_QUERY_TYPES:
+            return "general-inquiry"
+        return v
 
 
 class AnalyzeResponse(BaseModel):
     result: AnalysisResult
     prompt_tokens: int
     completion_tokens: int
-    raw_response: str
     preprocessed_message: str
