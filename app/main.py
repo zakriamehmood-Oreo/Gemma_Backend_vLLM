@@ -41,6 +41,8 @@ from app.schemas import (
     GenerateRequest,
     GenerateResponse,
     HealthResponse,
+    TranslateRequest,
+    TranslateResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,6 +163,15 @@ You are a customer support analysis assistant. Analyze ONLY the customer message
 
 Return ONLY valid JSON, nothing else:
 {"sentiment": "", "tone": "", "urgency": "", "sentiment_score": 0, "query_type": "", "churn_risk": 0}
+"""
+
+_TRANSLATE_PROMPT = """\
+Translate the following customer message into English.
+- If the message is already in English, return it exactly as provided.
+- Return ONLY the translated text. No explanation, no prefix, no quotes, no labels.
+
+Message:
+{message}
 """
 
 
@@ -379,6 +390,57 @@ async def analyze(request: AnalyzeRequest):
 
         return AnalyzeResponse(
             result=result,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            preprocessed_message=clean_message,
+        )
+
+
+@app.post("/translate", response_model=TranslateResponse, dependencies=[Depends(verify_api_key)])
+async def translate(request: TranslateRequest):
+    if not gemma.is_loaded:
+        requests_total.labels(status="model_not_loaded", endpoint="translate").inc()
+        raise HTTPException(status_code=503, detail="Model is not loaded")
+
+    clean_message = preprocess_message(request.message)
+    prompt = _TRANSLATE_PROMPT.replace("{message}", clean_message)
+
+    async with _concurrency_slot():
+        start = time.perf_counter()
+        loop = asyncio.get_event_loop()
+        try:
+            translated_text, prompt_tokens, completion_tokens = await loop.run_in_executor(
+                None,
+                lambda: gemma.generate(
+                    prompt=prompt,
+                    max_new_tokens=1024,
+                    temperature=0.1,
+                    top_p=0.9,
+                ),
+            )
+        except Exception as e:
+            requests_total.labels(status="error", endpoint="translate").inc()
+            logger.exception("Translation failed")
+            raise HTTPException(status_code=500, detail="Inference error")
+
+        duration = time.perf_counter() - start
+        inference_duration_seconds.observe(duration)
+        prompt_tokens_total.inc(prompt_tokens)
+        completion_tokens_total.inc(completion_tokens)
+        tokens_per_second.observe(completion_tokens / duration if duration > 0 else 0)
+        requests_total.labels(status="success", endpoint="translate").inc()
+        logger.info(
+            "endpoint=/translate status=success inference_duration=%.3f "
+            "prompt_tokens=%d completion_tokens=%d",
+            duration, prompt_tokens, completion_tokens,
+        )
+
+        translated_text = translated_text.strip()
+        if not translated_text:
+            raise HTTPException(status_code=422, detail="Model returned empty translation")
+
+        return TranslateResponse(
+            translated_text=translated_text,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             preprocessed_message=clean_message,

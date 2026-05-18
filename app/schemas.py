@@ -80,3 +80,14 @@ class AnalyzeResponse(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     preprocessed_message: str
+
+
+class TranslateRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=5000, description="Customer message in any language")
+
+
+class TranslateResponse(BaseModel):
+    translated_text: str
+    prompt_tokens: int
+    completion_tokens: int
+    preprocessed_message: str
