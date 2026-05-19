@@ -83,7 +83,7 @@ class AnalyzeResponse(BaseModel):
 
 
 class TranslateRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=5000, description="Customer message in any language")
+    message: str = Field(..., min_length=1, max_length=10000, description="Customer message in any language")
 
 
 class TranslateResponse(BaseModel):

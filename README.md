@@ -166,7 +166,7 @@ X-API-Key: your-api-key
 
 | Field | Required | Type | Limit | Description |
 |---|---|---|---|---|
-| `message` | ✅ Yes | string | 1–5000 chars | Customer message in any language |
+| `message` | ✅ Yes | string | 1–10,000 chars | Customer message in any language |
 
 **Example:**
 ```bash
@@ -247,7 +247,7 @@ curl http://YOUR_SERVER_IP:8000/metrics/ \
 
 - **API docs disabled** — `/docs`, `/redoc`, `/openapi.json` return 404
 - **Brute force protection** — 10 failed auth attempts per 60s blocks the IP for 5 minutes
-- **Message size limits** — `/analyze` and `/translate` max 5000 chars, `/generate` max 10,000 chars
+- **Message size limits** — `/analyze` max 5000 chars, `/translate` and `/generate` max 10,000 chars
 - **Metrics auth** — `/metrics` requires the same API key (constant-time comparison)
 - **Sanitised errors** — internal exceptions never leak stack traces or model output to callers
 - **Server header hidden** — responds as `server: api`
