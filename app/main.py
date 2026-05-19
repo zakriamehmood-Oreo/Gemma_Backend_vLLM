@@ -33,6 +33,8 @@ from app.metrics import (
     queued_requests,
     requests_total,
     tokens_per_second,
+    translate_duration_seconds,
+    translate_success_total,
 )
 from app.schemas import (
     AnalyzeRequest,
@@ -57,6 +59,22 @@ _RE_FENCE_CLOSE = re.compile(r"\s*```$")
 
 _CSV_PATH = pathlib.Path("/data/analyze_results.csv")
 _CSV_LOCK = threading.Lock()
+
+_TRANSLATE_COUNT_PATH = pathlib.Path("/data/translate_count.txt")
+_TRANSLATE_COUNT_LOCK = threading.Lock()
+
+
+def _load_translate_count() -> int:
+    try:
+        return int(_TRANSLATE_COUNT_PATH.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def _increment_translate_count() -> None:
+    with _TRANSLATE_COUNT_LOCK:
+        count = _load_translate_count() + 1
+        _TRANSLATE_COUNT_PATH.write_text(str(count))
 _CSV_FIELDS = [
     "timestamp", "preprocessed_message",
     "sentiment", "tone", "urgency", "sentiment_score", "query_type", "churn_risk",
@@ -204,10 +222,14 @@ async def lifespan(app: FastAPI):
     global _semaphore
     _semaphore = asyncio.Semaphore(settings.max_concurrent)
 
-    # Seed the persistent analyze counter from the CSV so it survives restarts
-    prior_count = _csv_row_count()
-    analyze_success_total.set(prior_count)
-    logger.info("Seeded gemma_analyze_success_total from CSV: %d", prior_count)
+    # Seed persistent counters from disk so they survive restarts
+    prior_analyze = _csv_row_count()
+    analyze_success_total.set(prior_analyze)
+    logger.info("Seeded gemma_analyze_success_total from CSV: %d", prior_analyze)
+
+    prior_translate = _load_translate_count()
+    translate_success_total.set(prior_translate)
+    logger.info("Seeded gemma_translate_success_total from file: %d", prior_translate)
 
     try:
         gemma.load()
@@ -425,6 +447,7 @@ async def translate(request: TranslateRequest):
 
         duration = time.perf_counter() - start
         inference_duration_seconds.observe(duration)
+        translate_duration_seconds.observe(duration)
         prompt_tokens_total.inc(prompt_tokens)
         completion_tokens_total.inc(completion_tokens)
         tokens_per_second.observe(completion_tokens / duration if duration > 0 else 0)
@@ -438,6 +461,9 @@ async def translate(request: TranslateRequest):
         translated_text = translated_text.strip()
         if not translated_text:
             raise HTTPException(status_code=422, detail="Model returned empty translation")
+
+        await loop.run_in_executor(None, _increment_translate_count)
+        translate_success_total.inc()
 
         return TranslateResponse(
             translated_text=translated_text,

@@ -1,6 +1,9 @@
 # Gemma 4 Customer Support Analysis API
 
-A production-ready FastAPI inference server for Google Gemma 4 E2B-it that classifies customer support messages into 6 structured outputs: sentiment, tone, urgency, sentiment score, query type, and churn risk.
+A production-ready FastAPI inference server for Google Gemma 4 E2B-it with three core capabilities:
+- **Analyze** — classifies customer support messages into 6 structured outputs
+- **Translate** — translates customer messages from any language into English
+- **Generate** — free-form text generation
 
 Runs fully containerised on GPU (NVIDIA T4), with Prometheus + Grafana + Loki monitoring and auto-restart on reboot via systemd.
 
@@ -8,6 +11,7 @@ Runs fully containerised on GPU (NVIDIA T4), with Prometheus + Grafana + Loki mo
 
 ## How It Works
 
+### /analyze flow
 ```
 Customer message
       ↓
@@ -17,7 +21,7 @@ Brute force check  (10 wrong keys / 60s → IP blocked for 5 min)
       ↓
 Concurrency queue  (max 10 active, up to 50 waiting, 429 if full)
       ↓
-Gemma 4 E2B-it  (Transformers backend on GPU, greedy decoding for /analyze)
+Gemma 4 E2B-it  (greedy decoding — deterministic JSON output)
       ↓
 JSON parser + Pydantic validation
       ↓
@@ -27,6 +31,19 @@ JSON parser + Pydantic validation
 Appended to /data/analyze_results.csv
 ```
 
+### /translate flow
+```
+Customer message (any language)
+      ↓
+Preprocessing + auth + concurrency queue  (same as above)
+      ↓
+Gemma 4 E2B-it  (greedy decoding — low-temperature translation)
+      ↓
+Plain English text
+      ↓
+Persistent call count saved to /data/translate_count.txt
+```
+
 ---
 
 ## Project Structure
@@ -34,13 +51,13 @@ Appended to /data/analyze_results.csv
 ```
 Gemma_Backend_vLLM/
 ├── app/
-│   ├── main.py               # FastAPI app, endpoints, concurrency queue, CSV logging
+│   ├── main.py               # FastAPI app, all endpoints, concurrency queue, CSV logging
 │   ├── inference.py          # TransformersBackend / VLLMBackend
 │   ├── preprocessing.py      # Text cleaning pipeline
 │   ├── auth.py               # API key auth + brute force protection
 │   ├── config.py             # Settings (reads from .env)
 │   ├── schemas.py            # Pydantic request/response models
-│   └── metrics.py            # Prometheus gauges and counters
+│   └── metrics.py            # Prometheus gauges, counters, histograms
 ├── monitoring/
 │   ├── prometheus.yml        # Scrape config (gemma_api, node, gpu)
 │   └── promtail.yml          # Log shipper config for Loki
@@ -62,7 +79,7 @@ Gemma_Backend_vLLM/
 ## API Endpoints
 
 ### `GET /health`
-No auth required. Returns server status.
+No auth required.
 
 ```bash
 curl http://YOUR_SERVER_IP:8000/health
@@ -80,7 +97,7 @@ curl http://YOUR_SERVER_IP:8000/health
 ---
 
 ### `POST /analyze`
-Classifies a customer support message.
+Classifies a customer support message into structured fields.
 
 **Headers:**
 ```
@@ -93,9 +110,9 @@ X-API-Key: your-api-key
 | Field | Required | Type | Limit | Description |
 |---|---|---|---|---|
 | `message` | ✅ Yes | string | 1–5000 chars | Raw customer message |
-| `max_new_tokens` | ❌ No | integer | 1–512, default 256 | Max response length — leave it out |
+| `max_new_tokens` | ❌ No | integer | 1–512, default 256 | Leave at default |
 
-**Example request:**
+**Example:**
 ```bash
 curl -X POST http://YOUR_SERVER_IP:8000/analyze \
   -H "Content-Type: application/json" \
@@ -121,7 +138,7 @@ curl -X POST http://YOUR_SERVER_IP:8000/analyze \
 }
 ```
 
-> `model_warnings` is an empty list in normal operation. If the model returns an invalid value for a field (e.g. an unrecognised tone), the field is substituted with a safe default and a description is added to `model_warnings` so callers can detect it.
+> `model_warnings` is an empty list in normal operation. If the model returns an invalid value for a field, it is substituted with a safe default and described in `model_warnings`.
 
 **Field values:**
 
@@ -133,6 +150,43 @@ curl -X POST http://YOUR_SERVER_IP:8000/analyze \
 | `sentiment_score` | `0–100` (0 = most hostile, 100 = most positive) |
 | `query_type` | `order-status` `shipping-delay` `address-change` `order-modification` `order-hold` `refund` `billing` `product-inquiry` `restock-inquiry` `damaged-item` `warranty` `technical-issue` `general-inquiry` |
 | `churn_risk` | `0–100` (0 = no risk, 100 = very likely to leave) |
+
+---
+
+### `POST /translate`
+Translates a customer message from any language into English.
+
+**Headers:**
+```
+Content-Type: application/json
+X-API-Key: your-api-key
+```
+
+**Body:**
+
+| Field | Required | Type | Limit | Description |
+|---|---|---|---|---|
+| `message` | ✅ Yes | string | 1–5000 chars | Customer message in any language |
+
+**Example:**
+```bash
+curl -X POST http://YOUR_SERVER_IP:8000/translate \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{"message": "لم يصل طلبي منذ أسبوعين. أريد استرداد أموالي فوراً"}'
+```
+
+**Response:**
+```json
+{
+  "translated_text": "My order has not arrived for two weeks. I want a refund immediately.",
+  "prompt_tokens": 75,
+  "completion_tokens": 16,
+  "preprocessed_message": "لم يصل طلبي منذ أسبوعين. أريد استرداد أموالي فوراً"
+}
+```
+
+> If the message is already in English it is returned unchanged. Supports all major languages including Arabic, Spanish, French, Urdu, Chinese, German, and more.
 
 ---
 
@@ -148,7 +202,7 @@ Free-form text generation.
 | `temperature` | ❌ No | float | 0.0–2.0, default 0.7 | Creativity — lower = more predictable |
 | `top_p` | ❌ No | float | 0.0–1.0, default 0.9 | Word variety — leave at default |
 
-**Example request:**
+**Example:**
 ```bash
 curl -X POST http://YOUR_SERVER_IP:8000/generate \
   -H "Content-Type: application/json" \
@@ -171,7 +225,7 @@ curl -X POST http://YOUR_SERVER_IP:8000/generate \
 Prometheus metrics. Requires API key.
 
 ```bash
-curl http://YOUR_SERVER_IP:8000/metrics \
+curl http://YOUR_SERVER_IP:8000/metrics/ \
   -H "X-API-Key: your-api-key"
 ```
 
@@ -184,29 +238,34 @@ curl http://YOUR_SERVER_IP:8000/metrics \
 | `401` | Missing or wrong API key |
 | `422` | Bad request — message too long, empty, or wrong field type |
 | `429` | Queue full, or IP blocked after too many wrong key attempts |
-| `503` | Model still loading — wait a few seconds and retry |
+| `503` | Model still loading — wait and retry |
+| `500` | Inference error — check logs |
 
 ---
 
 ## Security
 
-- **API docs disabled** — `/docs`, `/redoc`, `/openapi.json` return 404 in production
+- **API docs disabled** — `/docs`, `/redoc`, `/openapi.json` return 404
 - **Brute force protection** — 10 failed auth attempts per 60s blocks the IP for 5 minutes
-- **Message size limit** — `/analyze` max 5000 chars, `/generate` max 10,000 chars
+- **Message size limits** — `/analyze` and `/translate` max 5000 chars, `/generate` max 10,000 chars
 - **Metrics auth** — `/metrics` requires the same API key (constant-time comparison)
 - **Sanitised errors** — internal exceptions never leak stack traces or model output to callers
-- **Server header hidden** — responds as `server: api`, not `server: uvicorn`
-- **CORS** — controlled via `ALLOWED_ORIGINS` env var (set to your frontend domain in production)
+- **Server header hidden** — responds as `server: api`
+- **CORS** — controlled via `ALLOWED_ORIGINS` env var (set to your domain in production)
 
 ---
 
-## CSV Output
+## Persistent Data
 
-Every successful `/analyze` call is appended to `/data/analyze_results.csv` on the mounted drive.
+### Analyze CSV
+Every successful `/analyze` call is appended to `/data/analyze_results.csv`.
 
 Columns: `timestamp`, `preprocessed_message`, `sentiment`, `tone`, `urgency`, `sentiment_score`, `query_type`, `churn_risk`, `prompt_tokens`, `completion_tokens`, `inference_duration_seconds`
 
-The CSV is written asynchronously and never included in API responses — it lives only on the data drive.
+### Translate counter
+Every successful `/translate` call increments `/data/translate_count.txt` (a plain integer file).
+
+Both files live on the mounted NVMe drive and are read on container startup to seed Prometheus gauges — so all-time counts survive restarts and never reset to zero.
 
 ---
 
@@ -223,13 +282,11 @@ The CSV is written asynchronously and never included in API responses — it liv
 
 ### Scripts — what each one does
 
-There are three scripts. Each has a distinct role. **Do not confuse them.**
-
 | Script | When to use | What it does |
 |---|---|---|
 | `deploy.sh` | Once, on a fresh machine | Installs Docker, builds the image, writes `.env`, installs the systemd service, starts everything |
 | `startup.sh` | Every reboot (run by systemd automatically) | Mounts `/data`, loads the NVIDIA kernel module, starts the monitoring stack and the API container |
-| `gemma-startup.service` | Installed once by `deploy.sh` | systemd unit file that calls `startup.sh` on boot — you never run this directly |
+| `gemma-startup.service` | Installed once by `deploy.sh` | systemd unit file that calls `startup.sh` on boot — never run directly |
 
 ### One-command deploy (fresh machine)
 
@@ -249,9 +306,9 @@ bash deploy.sh
 - Installs `gemma-startup.service` into systemd and enables it
 - Calls `startup.sh` to start all services immediately
 
-After this, **every reboot is fully automatic** — no manual steps needed.
+After this, **every reboot is fully automatic**.
 
-### Manual steps (if you prefer step-by-step)
+### Manual steps
 
 **1. Clone the repo**
 ```bash
@@ -286,12 +343,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable gemma-startup
 ```
 
-**5. Start everything now**
+**5. Start everything**
 ```bash
 bash startup.sh
 ```
-
-From this point, all services restart automatically on every reboot.
 
 ### Boot sequence (automatic after setup)
 
@@ -304,9 +359,9 @@ gemma-startup.service runs startup.sh
 → checks /data mount
 → loads NVIDIA kernel module
 → starts monitoring stack (Prometheus, Grafana, Loki, Node Exporter, DCGM)
-→ starts gemma-api container  ← Docker also auto-restarts it via restart:unless-stopped
+→ starts gemma-api container
       ↓
-All services live in ~40 seconds (model is already cached)
+All services live in ~40 seconds (model already cached)
 ```
 
 ---
@@ -350,27 +405,37 @@ Login: `admin` / `<GRAFANA_PASSWORD from .env>`
 
 Data sources: `http://prometheus:9090` and `http://loki:3100`
 
-### Key Prometheus queries
+### Prometheus panel queries
 
-| Panel | Query |
-|---|---|
-| API up/down | `up{job="gemma_api"} * gemma_model_loaded` |
-| Request rate | `rate(gemma_requests_total{status="success"}[1m]) * 60` |
-| Analyze requests only | `rate(gemma_requests_total{endpoint="analyze",status="success"}[1m]) * 60` |
-| Avg inference time | `rate(gemma_inference_duration_seconds_sum[1m]) / rate(gemma_inference_duration_seconds_count[1m])` |
-| Active requests | `gemma_active_requests` |
-| Queue depth | `gemma_queued_requests` |
-| Error rate | `rate(gemma_requests_total{status="error"}[1m]) * 60` |
-| GPU utilization | `DCGM_FI_DEV_GPU_UTIL` |
-| GPU memory used | `DCGM_FI_DEV_FB_USED` |
-| CPU usage % | `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)` |
-| RAM usage % | `(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100` |
+| Panel | Visualisation | Query |
+|---|---|---|
+| API up/down | Stat | `up{job="gemma_api"} * gemma_model_loaded` |
+| Total analyze calls (all-time) | Stat | `gemma_analyze_success_total` |
+| Total translate calls (all-time) | Stat | `gemma_translate_success_total` |
+| Request rate (all endpoints) | Time series | `rate(gemma_requests_total{status="success"}[1m]) * 60` |
+| Analyze request rate | Time series | `rate(gemma_requests_total{endpoint="analyze",status="success"}[1m]) * 60` |
+| Translate request rate | Time series | `rate(gemma_requests_total{endpoint="translate",status="success"}[1m]) * 60` |
+| Avg inference time (all) | Time series | `rate(gemma_inference_duration_seconds_sum[1m]) / rate(gemma_inference_duration_seconds_count[1m])` |
+| Translate p50 latency | Time series | `histogram_quantile(0.50, rate(gemma_translate_duration_seconds_bucket[5m]))` |
+| Translate p95 latency | Time series | `histogram_quantile(0.95, rate(gemma_translate_duration_seconds_bucket[5m]))` |
+| Translate p99 latency | Time series | `histogram_quantile(0.99, rate(gemma_translate_duration_seconds_bucket[5m]))` |
+| Active requests | Stat | `gemma_active_requests` |
+| Queue depth | Stat | `gemma_queued_requests` |
+| Error rate | Time series | `rate(gemma_requests_total{status="error"}[1m]) * 60` |
+| GPU utilization | Time series | `DCGM_FI_DEV_GPU_UTIL` |
+| GPU memory used | Time series | `DCGM_FI_DEV_FB_USED` |
+| CPU usage % | Time series | `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)` |
+| RAM usage % | Time series | `(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100` |
 
-### Loki query (logs panel)
+> For the translate p50/p95/p99 panel, add all three queries in a single Time series panel and label them `p50`, `p95`, `p99` in the Legend field.
+
+### Loki query (API logs panel)
 
 ```
-{job="gemma_api"} |= "inference_duration"
+{job="gemma_api"} |~ "endpoint=/(analyze|translate)"
 ```
+
+This shows a log line per inference call for both `/analyze` and `/translate`, including duration and token counts.
 
 ---
 
