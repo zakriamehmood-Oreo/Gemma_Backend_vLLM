@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     api_key: str = ""
 
     # Concurrency: max requests processed at once; rest queue up to max_queue_depth
-    max_concurrent: int = 10
+    max_concurrent: int = 30
     max_queue_depth: int = 50
 
     # CORS: comma-separated list of allowed origins. Use * only in local dev.
