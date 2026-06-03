@@ -30,6 +30,7 @@ server_err*.txt
 # ide
 .vscode/
 .idea/
+.claude/
 
 # os
 .DS_Store

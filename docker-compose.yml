@@ -12,6 +12,7 @@ services:
     volumes:
       - /data/hf_cache:/data/hf_cache
       - /data:/data
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 2>&1 | tee -a /data/api.log"
     deploy:
       resources:
         reservations:

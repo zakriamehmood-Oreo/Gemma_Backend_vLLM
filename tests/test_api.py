@@ -31,7 +31,6 @@ def test_health_model_loaded(client, loaded_model):
     data = resp.json()
     assert data["status"] == "ok"
     assert data["model_loaded"] is True
-    assert "model_id" in data
 
 
 def test_health_model_not_loaded(client, unloaded_model):
@@ -120,7 +119,7 @@ def test_generate_inference_error(client, loaded_model):
     with patch.object(gemma, "generate", side_effect=RuntimeError("OOM")):
         resp = client.post("/generate", json={"prompt": "test"})
     assert resp.status_code == 500
-    assert "OOM" in resp.json()["detail"]
+    assert resp.json()["detail"] == "Inference error"
 
 
 def test_generate_invalid_temperature(client, loaded_model):

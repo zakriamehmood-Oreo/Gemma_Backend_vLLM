@@ -48,3 +48,24 @@ queued_requests = Gauge(
     "gemma_queued_requests",
     "Requests waiting in queue for a concurrency slot",
 )
+
+# All-time analyze success count — initialized from CSV on startup so it
+# survives container restarts without resetting to 0
+analyze_success_total = Gauge(
+    "gemma_analyze_success_total",
+    "All-time successful /analyze calls (persisted via CSV, survives restarts)",
+)
+
+# All-time translate success count — initialized from /data/translate_count.txt
+translate_success_total = Gauge(
+    "gemma_translate_success_total",
+    "All-time successful /translate calls (persisted via file, survives restarts)",
+)
+
+# Dedicated histogram for /translate inference duration — separate from the
+# shared histogram so p50/p95/p99 can be queried per-endpoint in Grafana
+translate_duration_seconds = Histogram(
+    "gemma_translate_duration_seconds",
+    "Inference wall-clock time for /translate calls",
+    buckets=[0.5, 1, 2, 5, 10, 20, 30, 60, 120],
+)

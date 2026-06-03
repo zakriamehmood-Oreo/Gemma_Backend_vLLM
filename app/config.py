@@ -21,8 +21,20 @@ class Settings(BaseSettings):
     api_key: str = ""
 
     # Concurrency: max requests processed at once; rest queue up to max_queue_depth
-    max_concurrent: int = 10
+    max_concurrent: int = 30
     max_queue_depth: int = 50
+
+    # CORS: comma-separated list of allowed origins. Use * only in local dev.
+    allowed_origins: str = "*"
+
+    # Set true to allow running with no API_KEY (local dev only)
+    allow_no_auth: bool = False
+
+    # Set true when behind a reverse proxy — enables X-Forwarded-For for real IP
+    trust_proxy: bool = False
+
+    # Grafana admin password (used by docker-compose.monitoring.yml)
+    grafana_password: str = "changeme"
 
 
 settings = Settings()

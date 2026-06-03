@@ -1,9 +1,8 @@
-from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
 class GenerateRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, description="The input prompt for the model")
+    prompt: str = Field(..., min_length=1, max_length=10000, description="The input prompt for the model")
     max_new_tokens: int | None = Field(None, gt=0, le=4096)
     temperature: float | None = Field(None, gt=0.0, le=2.0)
     top_p: float | None = Field(None, gt=0.0, le=1.0)
@@ -17,16 +16,13 @@ class GenerateResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-    model_id: str
     model_loaded: bool
     active_requests: int
     queued_requests: int
-    max_concurrent: int
-    max_queue_depth: int
 
 
 class AnalyzeRequest(BaseModel):
-    message: str = Field(..., min_length=1, description="Raw customer message to analyze")
+    message: str = Field(..., min_length=1, max_length=5000, description="Raw customer message to analyze")
     max_new_tokens: int | None = Field(None, gt=0, le=512)
 
 
@@ -47,31 +43,51 @@ class AnalysisResult(BaseModel):
     sentiment_score: int = Field(..., ge=0, le=100)
     query_type: str
     churn_risk: int = Field(..., ge=0, le=100)
+    model_warnings: list[str] = Field(default_factory=list, description="Fields substituted due to invalid model output")
 
     @field_validator("sentiment")
     @classmethod
     def validate_sentiment(cls, v: str) -> str:
-        return v if v in _VALID_SENTIMENTS else "neutral"
+        if v not in _VALID_SENTIMENTS:
+            # warning recorded in main.py after construction
+            return "neutral"
+        return v
 
     @field_validator("tone")
     @classmethod
     def validate_tone(cls, v: str) -> str:
-        return v if v in _VALID_TONES else "calm"
+        if v not in _VALID_TONES:
+            return "calm"
+        return v
 
     @field_validator("urgency")
     @classmethod
     def validate_urgency(cls, v: str) -> str:
-        return v if v in _VALID_URGENCIES else "medium"
+        if v not in _VALID_URGENCIES:
+            return "medium"
+        return v
 
     @field_validator("query_type")
     @classmethod
     def validate_query_type(cls, v: str) -> str:
-        return v if v in _VALID_QUERY_TYPES else "general-inquiry"
+        if v not in _VALID_QUERY_TYPES:
+            return "general-inquiry"
+        return v
 
 
 class AnalyzeResponse(BaseModel):
     result: AnalysisResult
     prompt_tokens: int
     completion_tokens: int
-    raw_response: str
+    preprocessed_message: str
+
+
+class TranslateRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=10000, description="Customer message in any language")
+
+
+class TranslateResponse(BaseModel):
+    translated_text: str
+    prompt_tokens: int
+    completion_tokens: int
     preprocessed_message: str

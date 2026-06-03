@@ -102,8 +102,10 @@ sudo docker run -d \
     --env-file "$APP_DIR/.env" \
     -v "$HF_CACHE:$HF_CACHE" \
     -v /data:/data \
+    -v "$APP_DIR/app:/app/app" \
     --restart unless-stopped \
-    gemma-api:latest
+    gemma-api:latest \
+    sh -c 'uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app 2>&1 | tee -a /data/api.log'
 
 success "Gemma API container started"
 

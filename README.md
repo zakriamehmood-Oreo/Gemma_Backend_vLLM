@@ -1,24 +1,47 @@
 # Gemma 4 Customer Support Analysis API
 
-A FastAPI inference server for Google Gemma 4 E2B-it that classifies customer support messages into 6 structured outputs: sentiment, tone, urgency, sentiment score, query type, and churn risk.
+A production-ready FastAPI inference server for Google Gemma 4 E2B-it with three core capabilities:
+- **Analyze** — classifies customer support messages into 6 structured outputs
+- **Translate** — translates customer messages from any language into English
+- **Generate** — free-form text generation
+
+Runs fully containerised on GPU (NVIDIA T4), with Prometheus + Grafana + Loki monitoring and auto-restart on reboot via systemd.
 
 ---
 
 ## How It Works
 
+### /analyze flow
 ```
 Customer message
       ↓
 Preprocessing  (mojibake fix → HTML strip → unicode normalise → signature strip)
       ↓
+Brute force check  (10 wrong keys / 60s → IP blocked for 5 min)
+      ↓
 Concurrency queue  (max 10 active, up to 50 waiting, 429 if full)
       ↓
-Gemma 4 E2B-it  (Transformers backend locally, vLLM on cloud GPU)
+Gemma 4 E2B-it  (greedy decoding — deterministic JSON output)
       ↓
 JSON parser + Pydantic validation
       ↓
 {"sentiment": "...", "tone": "...", "urgency": "...",
- "sentiment_score": 0-100, "query_type": "...", "churn_risk": 0-100}
+ "sentiment_score": 0–100, "query_type": "...", "churn_risk": 0–100}
+      ↓
+Appended to /data/analyze_results.csv
+```
+
+### /translate flow
+```
+Customer message (any language)
+      ↓
+Preprocessing + auth + concurrency queue  (same as above)
+      ↓
+Gemma 4 E2B-it  (greedy decoding — low-temperature translation)
+      ↓
+Plain English text
+      ↓
+Persistent call count saved to /data/translate_count.txt
 ```
 
 ---
@@ -28,212 +51,221 @@ JSON parser + Pydantic validation
 ```
 Gemma_Backend_vLLM/
 ├── app/
-│   ├── main.py          # FastAPI app, endpoints, concurrency queue
-│   ├── inference.py     # TransformersBackend / VLLMBackend
-│   ├── preprocessing.py # Text cleaning pipeline
-│   ├── auth.py          # API key authentication
-│   ├── config.py        # Settings (reads from .env)
-│   ├── schemas.py       # Pydantic request/response models
-│   └── metrics.py       # Prometheus gauges and counters
+│   ├── main.py               # FastAPI app, all endpoints, concurrency queue, CSV logging
+│   ├── inference.py          # TransformersBackend / VLLMBackend
+│   ├── preprocessing.py      # Text cleaning pipeline
+│   ├── auth.py               # API key auth + brute force protection
+│   ├── config.py             # Settings (reads from .env)
+│   ├── schemas.py            # Pydantic request/response models
+│   └── metrics.py            # Prometheus gauges, counters, histograms
+├── monitoring/
+│   ├── prometheus.yml        # Scrape config (gemma_api, node, gpu)
+│   └── promtail.yml          # Log shipper config for Loki
 ├── tests/
-│   ├── test_analyze.py
+│   ├── test_api.py
 │   └── test_auth.py
-├── monitoring/          # Grafana/Prometheus docker-compose configs
-├── .env.example         # Template — copy to .env and fill in values
-├── requirements.txt
-└── start.sh
+├── Dockerfile                # Container image for the API
+├── docker-compose.yml        # All services in one file (API + monitoring)
+├── docker-compose.monitoring.yml  # Monitoring stack only
+├── startup.sh                # Boot script (mount disk, start containers) — run by systemd
+├── gemma-startup.service     # systemd unit that runs startup.sh on every reboot
+├── deploy.sh                 # One-shot fresh-machine deployment script
+├── .env.example              # Template — copy to .env and fill in values
+└── requirements.txt
 ```
 
 ---
 
-## Local Setup (Windows / No GPU)
+## API Endpoints
 
-### 1. Clone and install
-
-```bash
-git clone <repo-url>
-cd Gemma_Backend_vLLM
-py -3.13 -m pip install -r requirements.txt
-```
-
-### 2. Create your `.env`
+### `GET /health`
+No auth required.
 
 ```bash
-copy .env.example .env
+curl http://YOUR_SERVER_IP:8000/health
 ```
-
-Open `.env` and set at minimum:
-
-```
-HF_TOKEN=hf_your_token_here
-INFERENCE_BACKEND=transformers
-API_KEY=                        # leave empty for local dev
-```
-
-### 3. Run
-
-```bash
-py -3.13 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-Or use the start script:
-
-```bash
-bash start.sh
-```
-
----
-
-## API Key Authentication
-
-### How it works
-
-- If `API_KEY` is empty in `.env` → **auth is disabled** (safe for local dev)
-- If `API_KEY` is set → every request to `/generate` and `/analyze` **must** include the header:
-
-```
-X-API-Key: your-secret-key
-```
-
-Requests without it, or with the wrong key, receive `401 Unauthorized`.
-
-The `/health` and `/metrics` endpoints are always public.
-
-### Setting up on a new server
-
-**Step 1 — generate a strong key**
-
-```bash
-python3 -c "import secrets; print(secrets.token_hex(32))"
-# example output: a3f8c2d1e9b047f6a2c5d8e3f1b4a7c2d5e8f1b4a7c2d5e8f1b4a7c2d5e8f1b4
-```
-
-**Step 2 — add it to `.env` on the server**
-
-```bash
-nano .env
-# set: API_KEY=a3f8c2d1e9b047f6a2c5d8e3f1b4a7c2...
-```
-
-**Step 3 — restart the server**
-
-```bash
-sudo systemctl restart gemma-api
-```
-
-**Step 4 — test it**
-
-```bash
-# Should return 401
-curl http://your-server/analyze -X POST -H "Content-Type: application/json" \
-  -d '{"message": "test"}'
-
-# Should return 200
-curl http://your-server/analyze -X POST \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: your-key-here" \
-  -d '{"message": "My order is late!"}'
-```
-
-> **Never commit your `.env` file.** It is listed in `.gitignore`. Rotate your `HF_TOKEN` if it has ever been pushed to a repository.
-
----
-
-## Concurrency & Queue
-
-The server processes at most **10 requests simultaneously**. Additional requests are queued (up to 50 waiting). If the queue is also full, the server returns `429 Too Many Requests`.
-
-```
-Incoming request
-    │
-    ├─ Queue full (>50 waiting)? → 429
-    │
-    └─ Add to queue
-           │
-           └─ Wait for a slot (max 10 active)
-                  │
-                  └─ Process → return response
-```
-
-You can tune these values in `.env`:
-
-```
-MAX_CONCURRENT=10    # raise if you have a bigger GPU / more memory
-MAX_QUEUE_DEPTH=50   # raise if you expect burst traffic
-```
-
-Current queue state is visible at `/health`:
 
 ```json
 {
   "status": "ok",
   "model_loaded": true,
-  "active_requests": 3,
-  "queued_requests": 7,
-  "max_concurrent": 10,
-  "max_queue_depth": 50
+  "active_requests": 0,
+  "queued_requests": 0
 }
 ```
 
 ---
 
-## API Reference
-
-### `GET /health`
-
-No auth required. Returns server and queue status.
-
-### `POST /generate`
-
-Requires `X-API-Key` header (if configured).
-
-```json
-{
-  "prompt": "Tell me about...",
-  "max_new_tokens": 512,
-  "temperature": 0.7,
-  "top_p": 0.9
-}
-```
-
 ### `POST /analyze`
+Classifies a customer support message into structured fields.
 
-Requires `X-API-Key` header (if configured).
-
-```json
-{ "message": "My order has not arrived after 3 weeks." }
+**Headers:**
+```
+Content-Type: application/json
+X-API-Key: your-api-key
 ```
 
-Response:
+**Body:**
 
+| Field | Required | Type | Limit | Description |
+|---|---|---|---|---|
+| `message` | ✅ Yes | string | 1–5000 chars | Raw customer message |
+| `max_new_tokens` | ❌ No | integer | 1–512, default 256 | Leave at default |
+
+**Example:**
+```bash
+curl -X POST http://YOUR_SERVER_IP:8000/analyze \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{"message": "I have been waiting 3 weeks for my order and nobody is responding!"}'
+```
+
+**Response:**
 ```json
 {
   "result": {
     "sentiment": "negative",
     "tone": "frustrated",
     "urgency": "high",
-    "sentiment_score": 28,
-    "query_type": "shipping-delay",
-    "churn_risk": 65
+    "sentiment_score": 36,
+    "query_type": "order-status",
+    "churn_risk": 55,
+    "model_warnings": []
   },
-  "prompt_tokens": 614,
-  "completion_tokens": 52,
-  "raw_response": "...",
-  "preprocessed_message": "My order has not arrived after 3 weeks."
+  "prompt_tokens": 618,
+  "completion_tokens": 49,
+  "preprocessed_message": "I have been waiting 3 weeks..."
 }
 ```
 
-**Sentiment:** `positive` | `neutral` | `negative` | `threatening`
+> `model_warnings` is an empty list in normal operation. If the model returns an invalid value for a field, it is substituted with a safe default and described in `model_warnings`.
 
-**Tone:** `calm` | `frustrated` | `angry` | `anxious` | `appreciative` | `demanding` | `sarcastic`
+**Field values:**
 
-**Urgency:** `low` | `medium` | `high` | `critical`
+| Field | Possible values |
+|---|---|
+| `sentiment` | `positive` `neutral` `negative` `threatening` |
+| `tone` | `calm` `frustrated` `angry` `anxious` `appreciative` `demanding` `sarcastic` |
+| `urgency` | `low` `medium` `high` `critical` |
+| `sentiment_score` | `0–100` (0 = most hostile, 100 = most positive) |
+| `query_type` | `order-status` `shipping-delay` `address-change` `order-modification` `order-hold` `refund` `billing` `product-inquiry` `restock-inquiry` `damaged-item` `warranty` `technical-issue` `general-inquiry` |
+| `churn_risk` | `0–100` (0 = no risk, 100 = very likely to leave) |
 
-**Query type:** `order-status` | `shipping-delay` | `address-change` | `order-modification` | `order-hold` | `refund` | `billing` | `product-inquiry` | `restock-inquiry` | `damaged-item` | `warranty` | `technical-issue` | `general-inquiry`
+---
+
+### `POST /translate`
+Translates a customer message from any language into English.
+
+**Headers:**
+```
+Content-Type: application/json
+X-API-Key: your-api-key
+```
+
+**Body:**
+
+| Field | Required | Type | Limit | Description |
+|---|---|---|---|---|
+| `message` | ✅ Yes | string | 1–10,000 chars | Customer message in any language |
+
+**Example:**
+```bash
+curl -X POST http://YOUR_SERVER_IP:8000/translate \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{"message": "لم يصل طلبي منذ أسبوعين. أريد استرداد أموالي فوراً"}'
+```
+
+**Response:**
+```json
+{
+  "translated_text": "My order has not arrived for two weeks. I want a refund immediately.",
+  "prompt_tokens": 75,
+  "completion_tokens": 16,
+  "preprocessed_message": "لم يصل طلبي منذ أسبوعين. أريد استرداد أموالي فوراً"
+}
+```
+
+> If the message is already in English it is returned unchanged. Supports all major languages including Arabic, Spanish, French, Urdu, Chinese, German, and more.
+
+---
+
+### `POST /generate`
+Free-form text generation.
+
+**Body:**
+
+| Field | Required | Type | Limit | Description |
+|---|---|---|---|---|
+| `prompt` | ✅ Yes | string | 1–10,000 chars | Instruction or text for the model |
+| `max_new_tokens` | ❌ No | integer | 1–4096, default 512 | Max response length |
+| `temperature` | ❌ No | float | 0.0–2.0, default 0.7 | Creativity — lower = more predictable |
+| `top_p` | ❌ No | float | 0.0–1.0, default 0.9 | Word variety — leave at default |
+
+**Example:**
+```bash
+curl -X POST http://YOUR_SERVER_IP:8000/generate \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{"prompt": "Write a polite reply to a customer who has been waiting 3 weeks for their order."}'
+```
+
+**Response:**
+```json
+{
+  "response": "Dear customer, we sincerely apologize for the delay...",
+  "prompt_tokens": 45,
+  "completion_tokens": 120
+}
+```
+
+---
 
 ### `GET /metrics`
+Prometheus metrics. Requires API key.
 
-Prometheus metrics endpoint. No auth required.
+```bash
+curl http://YOUR_SERVER_IP:8000/metrics/ \
+  -H "X-API-Key: your-api-key"
+```
+
+---
+
+## Error Codes
+
+| Code | Meaning |
+|---|---|
+| `401` | Missing or wrong API key |
+| `422` | Bad request — message too long, empty, or wrong field type |
+| `429` | Queue full, or IP blocked after too many wrong key attempts |
+| `503` | Model still loading — wait and retry |
+| `500` | Inference error — check logs |
+
+---
+
+## Security
+
+- **API docs disabled** — `/docs`, `/redoc`, `/openapi.json` return 404
+- **Brute force protection** — 10 failed auth attempts per 60s blocks the IP for 5 minutes
+- **Message size limits** — `/analyze` max 5000 chars, `/translate` and `/generate` max 10,000 chars
+- **Metrics auth** — `/metrics` requires the same API key (constant-time comparison)
+- **Sanitised errors** — internal exceptions never leak stack traces or model output to callers
+- **Server header hidden** — responds as `server: api`
+- **CORS** — controlled via `ALLOWED_ORIGINS` env var (set to your domain in production)
+
+---
+
+## Persistent Data
+
+### Analyze CSV
+Every successful `/analyze` call is appended to `/data/analyze_results.csv`.
+
+Columns: `timestamp`, `preprocessed_message`, `sentiment`, `tone`, `urgency`, `sentiment_score`, `query_type`, `churn_risk`, `prompt_tokens`, `completion_tokens`, `inference_duration_seconds`
+
+### Translate counter
+Every successful `/translate` call increments `/data/translate_count.txt` (a plain integer file).
+
+Both files live on the mounted NVMe drive and are read on container startup to seed Prometheus gauges — so all-time counts survive restarts and never reset to zero.
 
 ---
 
@@ -246,174 +278,217 @@ Prometheus metrics endpoint. No auth required.
 | Instance | `g4dn.xlarge` |
 | GPU | NVIDIA T4 (16 GB VRAM) |
 | OS | Ubuntu 22.04 LTS |
-| Cost | ~$0.53/hr on-demand |
+| Storage | 100 GB NVMe attached at `/data` |
 
-### Steps
+### Scripts — what each one does
 
-**1. Connect to your instance**
+| Script | When to use | What it does |
+|---|---|---|
+| `deploy.sh` | Once, on a fresh machine | Installs Docker, builds the image, writes `.env`, installs the systemd service, starts everything |
+| `startup.sh` | Every reboot (run by systemd automatically) | Mounts `/data`, loads the NVIDIA kernel module, starts the monitoring stack and the API container |
+| `gemma-startup.service` | Installed once by `deploy.sh` | systemd unit file that calls `startup.sh` on boot — never run directly |
 
-```bash
-chmod 400 your-key.pem
-ssh -i your-key.pem ubuntu@YOUR_EC2_IP
-```
-
-**2. Install dependencies**
-
-```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3.11 python3.11-venv python3-pip git nginx
-```
-
-**3. Upload your code**
-
-From your local machine:
+### One-command deploy (fresh machine)
 
 ```bash
-scp -i your-key.pem -r C:\Users\Nysonian\Documents\Gemma_Backend_vLLM ubuntu@YOUR_EC2_IP:~/
+# 1. Edit the top of deploy.sh — set REPO_URL, HF_TOKEN, API_KEY, GRAFANA_PASSWORD
+nano deploy.sh
+
+# 2. Run it
+bash deploy.sh
 ```
 
-**4. Set up Python environment**
+`deploy.sh` does everything end-to-end:
+- Installs Docker and NVIDIA Container Toolkit
+- Clones the repo into `/data/Gemma_Backend_vLLM`
+- Writes a `.env` file with your credentials
+- Builds the `gemma-api:latest` Docker image
+- Installs `gemma-startup.service` into systemd and enables it
+- Calls `startup.sh` to start all services immediately
 
+After this, **every reboot is fully automatic**.
+
+### Manual steps
+
+**1. Clone the repo**
 ```bash
-cd ~/Gemma_Backend_vLLM
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-# Uncomment vllm in requirements.txt first if using vLLM backend
+git clone <repo-url> /data/Gemma_Backend_vLLM
+cd /data/Gemma_Backend_vLLM
 ```
 
-**5. Configure environment**
-
+**2. Create `.env`**
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-Set:
+Minimum required:
 ```
-HF_TOKEN=hf_your_token
-INFERENCE_BACKEND=vllm         # use vllm on Linux+GPU
-API_KEY=your-generated-secret
+HF_TOKEN=hf_your_token_here
+INFERENCE_BACKEND=transformers
+API_KEY=your-strong-secret-key
+ALLOWED_ORIGINS=https://yourdomain.com
+GRAFANA_PASSWORD=your-grafana-password
 ```
 
-**6. Create systemd service**
-
+**3. Build the Docker image**
 ```bash
-sudo nano /etc/systemd/system/gemma-api.service
+docker build -t gemma-api:latest .
 ```
 
-```ini
-[Unit]
-Description=Gemma 4 Support API
-After=network.target
-
-[Service]
-User=ubuntu
-WorkingDirectory=/home/ubuntu/Gemma_Backend_vLLM
-EnvironmentFile=/home/ubuntu/Gemma_Backend_vLLM/.env
-ExecStart=/home/ubuntu/Gemma_Backend_vLLM/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
+**4. Install the systemd service**
 ```bash
+sudo cp gemma-startup.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable gemma-api
-sudo systemctl start gemma-api
-sudo systemctl status gemma-api
+sudo systemctl enable gemma-startup
 ```
 
-**7. Nginx reverse proxy**
-
+**5. Start everything**
 ```bash
-sudo nano /etc/nginx/sites-available/gemma-api
+bash startup.sh
 ```
 
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
+### Boot sequence (automatic after setup)
 
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_read_timeout 300s;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
 ```
-
-```bash
-sudo ln -s /etc/nginx/sites-available/gemma-api /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-**8. TLS (HTTPS)**
-
-```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d your-domain.com
-```
-
-### Useful commands on the server
-
-```bash
-# View live logs
-sudo journalctl -u gemma-api -f
-
-# Restart after code changes
-sudo systemctl restart gemma-api
-
-# Check queue state
-curl http://localhost:8000/health
+Server reboots
+      ↓
+/data auto-mounts (fstab UUID entry)
+      ↓
+gemma-startup.service runs startup.sh
+→ checks /data mount
+→ loads NVIDIA kernel module
+→ starts monitoring stack (Prometheus, Grafana, Loki, Node Exporter, DCGM)
+→ starts gemma-api container
+      ↓
+All services live in ~40 seconds (model already cached)
 ```
 
 ---
 
-## Monitoring
+## Running Services
 
-Prometheus + Grafana are included via Docker Compose:
+| Service | URL | Description |
+|---|---|---|
+| Gemma API | `http://YOUR_IP:8000` | Inference API |
+| Grafana | `http://YOUR_IP:3000` | Dashboards |
+| Prometheus | `http://YOUR_IP:9090` | Metrics store |
+| Loki | `http://YOUR_IP:3100` | Log store |
+
+### Start / stop commands
 
 ```bash
-docker compose -f docker-compose.monitoring.yml up -d
+# Check what's running
+docker ps
+
+# View API logs live
+docker logs -f gemma-api
+
+# Restart API only
+docker restart gemma-api
+
+# Start monitoring stack
+cd /data/Gemma_Backend_vLLM && docker compose -f docker-compose.monitoring.yml up -d
+
+# Stop monitoring stack
+docker compose -f docker-compose.monitoring.yml down
+
+# Start all services manually (same as boot)
+bash /data/Gemma_Backend_vLLM/startup.sh
 ```
 
-Key metrics:
+---
 
-| Metric | What it tells you |
-|---|---|
-| `gemma_active_requests` | Requests being processed right now |
-| `gemma_queued_requests` | Requests waiting for a slot |
-| `gemma_inference_duration_seconds` | How long each request takes |
-| `gemma_tokens_per_second` | Throughput |
-| `gemma_requests_total` | Success / error counts |
+## Monitoring (Grafana)
+
+Login: `admin` / `<GRAFANA_PASSWORD from .env>`
+
+Data sources: `http://prometheus:9090` and `http://loki:3100`
+
+### Prometheus panel queries
+
+| Panel | Visualisation | Query |
+|---|---|---|
+| API up/down | Stat | `up{job="gemma_api"} * gemma_model_loaded` |
+| Total analyze calls (all-time) | Stat | `gemma_analyze_success_total` |
+| Total translate calls (all-time) | Stat | `gemma_translate_success_total` |
+| Request rate (all endpoints) | Time series | `rate(gemma_requests_total{status="success"}[1m]) * 60` |
+| Analyze request rate | Time series | `rate(gemma_requests_total{endpoint="analyze",status="success"}[1m]) * 60` |
+| Translate request rate | Time series | `rate(gemma_requests_total{endpoint="translate",status="success"}[1m]) * 60` |
+| Avg inference time (all) | Time series | `rate(gemma_inference_duration_seconds_sum[1m]) / rate(gemma_inference_duration_seconds_count[1m])` |
+| Translate p50 latency | Time series | `histogram_quantile(0.50, rate(gemma_translate_duration_seconds_bucket[5m]))` |
+| Translate p95 latency | Time series | `histogram_quantile(0.95, rate(gemma_translate_duration_seconds_bucket[5m]))` |
+| Translate p99 latency | Time series | `histogram_quantile(0.99, rate(gemma_translate_duration_seconds_bucket[5m]))` |
+| Active requests | Stat | `gemma_active_requests` |
+| Queue depth | Stat | `gemma_queued_requests` |
+| Error rate | Time series | `rate(gemma_requests_total{status="error"}[1m]) * 60` |
+| GPU utilization | Time series | `DCGM_FI_DEV_GPU_UTIL` |
+| GPU memory used | Time series | `DCGM_FI_DEV_FB_USED` |
+| CPU usage % | Time series | `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)` |
+| RAM usage % | Time series | `(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100` |
+
+> For the translate p50/p95/p99 panel, add all three queries in a single Time series panel and label them `p50`, `p95`, `p99` in the Legend field.
+
+### Loki query (API logs panel)
+
+```
+{job="gemma_api"} |~ "endpoint=/(analyze|translate)"
+```
+
+This shows a log line per inference call for both `/analyze` and `/translate`, including duration and token counts.
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `MODEL_ID` | `google/gemma-4-E2B-it` | HuggingFace model ID |
+| `HF_TOKEN` | _(required)_ | HuggingFace access token |
+| `INFERENCE_BACKEND` | `transformers` | `transformers` or `vllm` |
+| `MAX_NEW_TOKENS` | `512` | Default max tokens to generate |
+| `TEMPERATURE` | `0.7` | Sampling temperature |
+| `TOP_P` | `0.9` | Nucleus sampling threshold |
+| `LOAD_IN_4BIT` | `false` | 4-bit quantization (requires bitsandbytes CUDA build) |
+| `HOST` | `0.0.0.0` | Bind address |
+| `PORT` | `8000` | Bind port |
+| `API_KEY` | _(required)_ | Auth key — never leave empty in production |
+| `ALLOW_NO_AUTH` | `false` | Set `true` only for local dev with no API key |
+| `MAX_CONCURRENT` | `10` | Max simultaneous requests |
+| `MAX_QUEUE_DEPTH` | `50` | Max requests allowed to queue before 429 |
+| `ALLOWED_ORIGINS` | `*` | CORS origins — set to your domain in production |
+| `GRAFANA_PASSWORD` | `changeme` | Grafana admin password |
+| `TRUST_PROXY` | `false` | Set `true` if behind a reverse proxy (enables X-Forwarded-For) |
+
+---
+
+## Local Setup (Windows / No GPU)
+
+```bash
+git clone <repo-url>
+cd Gemma_Backend_vLLM
+py -3.11 -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env   # then edit .env
+py -3.11 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Set in `.env` for local:
+```
+INFERENCE_BACKEND=transformers
+API_KEY=
+ALLOW_NO_AUTH=true
+```
 
 ---
 
 ## Running Tests
 
 ```bash
-py -3.13 -m pytest tests/ -v
+pytest tests/ -v
 ```
 
 ---
 
-## Environment Variables Reference
-
-| Variable | Default | Description |
-|---|---|---|
-| `MODEL_ID` | `google/gemma-4-E2B-it` | HuggingFace model ID |
-| `HF_TOKEN` | _(required)_ | HuggingFace access token |
-| `INFERENCE_BACKEND` | `transformers` | `transformers` (local) or `vllm` (cloud) |
-| `MAX_NEW_TOKENS` | `512` | Max tokens to generate |
-| `TEMPERATURE` | `0.7` | Sampling temperature |
-| `TOP_P` | `0.9` | Nucleus sampling threshold |
-| `LOAD_IN_4BIT` | `true` | 4-bit quantization (requires CUDA + bitsandbytes) |
-| `HOST` | `0.0.0.0` | Bind address |
-| `PORT` | `8000` | Bind port |
-| `API_KEY` | _(empty)_ | Auth key — empty disables auth |
-| `MAX_CONCURRENT` | `10` | Max simultaneous requests |
-| `MAX_QUEUE_DEPTH` | `50` | Max requests allowed to queue |
+> **Never commit your `.env` file.** It is in `.gitignore`. Rotate your `HF_TOKEN` immediately if it has ever been pushed to a public repository.
