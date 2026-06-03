@@ -122,16 +122,22 @@ class VLLMBackend(BaseInferenceBackend):
         self.tokenizer = None
 
     def load(self):
+        import os
         from vllm import LLM
         from transformers import AutoTokenizer
 
         hf_token = settings.hf_token or None
+        if hf_token:
+            os.environ["HF_TOKEN"] = hf_token
+            os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+
         self.tokenizer = AutoTokenizer.from_pretrained(settings.model_id, token=hf_token)
         self.llm = LLM(
             model=settings.model_id,
-            dtype="bfloat16",
-            quantization="bitsandbytes" if settings.load_in_4bit else None,
-            token=hf_token,
+            dtype="float16",
+            max_model_len=2048,
+            gpu_memory_utilization=0.78,
+            enforce_eager=True,
         )
         self._loaded = True
         logger.info("VLLMBackend loaded")

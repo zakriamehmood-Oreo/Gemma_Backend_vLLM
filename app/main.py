@@ -1,9 +1,14 @@
 import asyncio
+import csv
 import json
 import logging
+import pathlib
 import re
+import threading
 import time
 from contextlib import asynccontextmanager
+
+logging.basicConfig(level=logging.INFO)
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,13 +42,31 @@ logger = logging.getLogger(__name__)
 _semaphore: asyncio.Semaphore | None = None
 _waiting: int = 0
 
+_CSV_PATH = pathlib.Path("/data/analyze_results.csv")
+_CSV_LOCK = threading.Lock()
+_CSV_FIELDS = [
+    "timestamp", "preprocessed_message",
+    "sentiment", "tone", "urgency", "sentiment_score", "query_type", "churn_risk",
+    "prompt_tokens", "completion_tokens", "inference_duration_seconds",
+]
+
+
+def _append_csv(row: dict):
+    with _CSV_LOCK:
+        write_header = not _CSV_PATH.exists()
+        with _CSV_PATH.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
+
 
 @asynccontextmanager
 async def _concurrency_slot():
     """Acquire a concurrency slot; queue if full; reject if queue is full."""
     global _waiting
     if _waiting >= settings.max_queue_depth:
-        requests_total.labels(status="queue_full").inc()
+        requests_total.labels(status="queue_full", endpoint="unknown").inc()
         raise HTTPException(
             status_code=429,
             detail=(
@@ -185,7 +208,7 @@ def health():
 @app.post("/generate", response_model=GenerateResponse, dependencies=[Depends(verify_api_key)])
 async def generate(request: GenerateRequest):
     if not gemma.is_loaded:
-        requests_total.labels(status="model_not_loaded").inc()
+        requests_total.labels(status="model_not_loaded", endpoint="generate").inc()
         raise HTTPException(status_code=503, detail="Model is not loaded")
 
     async with _concurrency_slot():
@@ -202,7 +225,7 @@ async def generate(request: GenerateRequest):
                 ),
             )
         except Exception as e:
-            requests_total.labels(status="error").inc()
+            requests_total.labels(status="error", endpoint="generate").inc()
             logger.exception("Generation failed")
             raise HTTPException(status_code=500, detail=repr(e))
 
@@ -211,7 +234,12 @@ async def generate(request: GenerateRequest):
         prompt_tokens_total.inc(prompt_tokens)
         completion_tokens_total.inc(completion_tokens)
         tokens_per_second.observe(completion_tokens / duration if duration > 0 else 0)
-        requests_total.labels(status="success").inc()
+        requests_total.labels(status="success", endpoint="generate").inc()
+        logger.info(
+            "endpoint=/generate status=success inference_duration=%.3f "
+            "prompt_tokens=%d completion_tokens=%d",
+            duration, prompt_tokens, completion_tokens,
+        )
 
         return GenerateResponse(
             response=response_text,
@@ -223,7 +251,7 @@ async def generate(request: GenerateRequest):
 @app.post("/analyze", response_model=AnalyzeResponse, dependencies=[Depends(verify_api_key)])
 async def analyze(request: AnalyzeRequest):
     if not gemma.is_loaded:
-        requests_total.labels(status="model_not_loaded").inc()
+        requests_total.labels(status="model_not_loaded", endpoint="analyze").inc()
         raise HTTPException(status_code=503, detail="Model is not loaded")
 
     clean_message = preprocess_message(request.message)
@@ -243,7 +271,7 @@ async def analyze(request: AnalyzeRequest):
                 ),
             )
         except Exception as e:
-            requests_total.labels(status="error").inc()
+            requests_total.labels(status="error", endpoint="analyze").inc()
             logger.exception("Analysis generation failed")
             raise HTTPException(status_code=500, detail=repr(e))
 
@@ -252,7 +280,12 @@ async def analyze(request: AnalyzeRequest):
         prompt_tokens_total.inc(prompt_tokens)
         completion_tokens_total.inc(completion_tokens)
         tokens_per_second.observe(completion_tokens / duration if duration > 0 else 0)
-        requests_total.labels(status="success").inc()
+        requests_total.labels(status="success", endpoint="analyze").inc()
+        logger.info(
+            "endpoint=/analyze status=success inference_duration=%.3f "
+            "prompt_tokens=%d completion_tokens=%d",
+            duration, prompt_tokens, completion_tokens,
+        )
 
         try:
             parsed = _extract_json(raw_text)
@@ -263,6 +296,15 @@ async def analyze(request: AnalyzeRequest):
                 status_code=422,
                 detail=f"Model returned invalid JSON: {e}. Raw: {raw_text!r}",
             )
+
+        _append_csv({
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "preprocessed_message": clean_message,
+            **result.model_dump(),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "inference_duration_seconds": round(duration, 3),
+        })
 
         return AnalyzeResponse(
             result=result,
