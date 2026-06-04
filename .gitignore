@@ -27,6 +27,9 @@ models/
 server_out*.txt
 server_err*.txt
 
+# local ops reference
+COMMANDS.md
+
 # ide
 .vscode/
 .idea/
