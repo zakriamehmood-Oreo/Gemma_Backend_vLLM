@@ -31,8 +31,10 @@ _VALID_TONES = {"calm", "frustrated", "angry", "anxious", "appreciative", "deman
 _VALID_URGENCIES = {"low", "medium", "high", "critical"}
 _VALID_QUERY_TYPES = {
     "order-status", "shipping-delay", "address-change", "order-modification",
-    "order-hold", "refund", "billing", "product-inquiry", "restock-inquiry",
-    "damaged-item", "warranty", "technical-issue", "general-inquiry",
+    "order-hold", "cancellation", "refund", "billing", "product-inquiry",
+    "restock-inquiry", "damaged-item", "warranty", "lock-issue",
+    "discount-request", "gift-card-issue", "nobl-air-support",
+    "collaboration", "positive-feedback", "technical-issue", "general-inquiry",
 }
 
 

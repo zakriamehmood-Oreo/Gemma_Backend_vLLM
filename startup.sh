@@ -76,6 +76,9 @@ if modinfo nvidia > /dev/null 2>&1; then
         success "NVIDIA module already loaded"
     fi
     nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null && true
+    sudo nvidia-smi -pm 1
+    sudo nvidia-smi --lock-gpu-clocks=1590,1590
+    success "GPU persistence mode enabled, clocks locked at 1590 MHz"
 else
     warn "NVIDIA driver not found — running on CPU"
 fi
@@ -97,7 +100,8 @@ sudo docker rm -f gemma-api 2>/dev/null || true
 
 sudo docker run -d \
     --name gemma-api \
-    --gpus all \
+    --runtime=nvidia \
+    -e NVIDIA_VISIBLE_DEVICES=all \
     -p 8000:8000 \
     --env-file "$APP_DIR/.env" \
     -v "$HF_CACHE:$HF_CACHE" \

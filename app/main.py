@@ -84,11 +84,12 @@ _CSV_FIELDS = [
 _SENTIMENT_VALID = {"positive", "neutral", "negative", "threatening"}
 _TONE_VALID = {"calm", "frustrated", "angry", "anxious", "appreciative", "demanding", "sarcastic"}
 _URGENCY_VALID = {"low", "medium", "high", "critical"}
-_QUERY_VALID = {
-    "order-status", "shipping-delay", "address-change", "order-modification",
-    "order-hold", "refund", "billing", "product-inquiry", "restock-inquiry",
-    "damaged-item", "warranty", "technical-issue", "general-inquiry",
-}
+_QUERY_VALID = {"order-status", "shipping-delay", "address-change",
+ "order-modification", "order-hold", "cancellation",
+  "refund", "billing", "product-inquiry", "restock-inquiry",
+   "damaged-item", "warranty", "lock-issue", "discount-request",
+    "gift-card-issue", "nobl-air-support", "collaboration",
+     "positive-feedback", "technical-issue", "general-inquiry"}
 
 
 def _append_csv(row: dict):
@@ -131,62 +132,48 @@ async def _concurrency_slot():
             queued_requests.set(_waiting)
 
 _ANALYZE_PROMPT = """\
-You are a customer support analysis assistant. Analyze ONLY the customer message below and return a single JSON object. No explanation. No extra text.
+You are a customer support analyst. Analyze the customer message and return ONLY a valid JSON object. No explanation, no extra text.
 
-## Rules
+## HARD OVERRIDES — apply these first, no exceptions
+- Message contains "cancel" / "cancellation" → query_type = "cancellation"
+- Message contains "refund" / "money back" / "chargeback" → query_type = "refund"
+- Message contains "legal" / "BBB" / "dispute" / "authorities" / "social media" → sentiment = "threatening"
 
-**1. sentiment** — pick one: positive | neutral | negative | threatening
-- threatening: ANY mention of legal action, chargeback, refund dispute, authorities, public exposure, BBB, Better Business Bureau, "never buying again", or social media threats — ALWAYS overrides others
-- negative: frustration, complaints, dissatisfaction
-- neutral: factual, no emotion
-- positive: satisfaction, praise, thanks
+## Fields
 
-**2. tone** — pick one: calm | frustrated | angry | anxious | appreciative | demanding | sarcastic
-- angry: insults, ALL CAPS, harsh or aggressive language
-- frustrated: complaint without aggression
-- demanding: direct commands ("fix this now", "send it immediately")
-- anxious: worry or fear ("I'm concerned", "getting nervous")
-- sarcastic: mockery or passive-aggressive language
-- appreciative: gratitude or positive acknowledgment
-- calm: composed, neutral delivery
+**sentiment**: threatening > negative > neutral > positive
+- threatening: legal threats, chargeback, BBB, public exposure, "never buying again", social media threats
+- negative: frustration, complaints | neutral: factual | positive: praise, thanks
 
-**3. urgency** — pick one: low | medium | high | critical
-- critical: deadline within 48 hours OR sentiment is threatening
-- high: explicitly mentions urgency (ASAP, urgent) OR is a repeated follow-up
-- medium: clear need, no urgency signals
-- low: informational only
+**tone**: calm | frustrated | angry | anxious | appreciative | demanding | sarcastic
+- angry: insults, ALL CAPS | frustrated: complaint without aggression | demanding: direct commands
+- anxious: worry/fear | sarcastic: mockery | appreciative: gratitude | calm: composed
 
-**4. sentiment_score** — integer 0–100
-- 0–20: threatening or extreme hostility
-- 21–35: strong negative (angry, multiple complaints)
-- 36–45: mild negative (frustrated, disappointed)
-- 46–54: neutral
-- 55–70: mild positive (polite, appreciative)
-- 71–100: strong positive (praise, very satisfied)
+**urgency**: critical | high | medium | low
+- critical: deadline ≤48h or threatening | high: "ASAP"/"urgent" or repeat follow-up
+- medium: clear need, no urgency signals | low: informational
 
-**5. query_type** — pick one: order-status | shipping-delay | address-change | order-modification | order-hold | cancellation | refund | billing | product-inquiry | restock-inquiry | damaged-item | warranty | lock-issue | discount-request | gift-card-issue | nobl-air-support | collaboration | positive-feedback | technical-issue | general-inquiry
-- If multiple intents, pick the most urgent or irreversible
-- Cancellation or refund always overrides other intents
-- cancellation: customer wants to stop, cancel, or reverse an order
-- lock-issue: TSA lock problems, lockouts, combination resets
-- discount-request: asking for a discount, promo code, or price match
-- gift-card-issue: problems with gift cards not received or not working
-- nobl-air-support: NOBL AIR tracker setup, troubleshooting, battery, app questions
-- collaboration: media, sponsorship, influencer, or partnership outreach
-- positive-feedback: compliment, review, or general positive message with no support need
+**sentiment_score** (0–100):
+0–20 threatening | 21–35 strong negative | 36–45 mild negative | 46–54 neutral | 55–70 mild positive | 71–100 strong positive
 
-**6. churn_risk** — integer 0–100, baseline 50
-- Add: threatening +30, refund/cancellation request +20, repeated issue +15, strong negative sentiment +20, mentions a competitor +10
-- Subtract: positive sentiment -15, appreciation -10
-- Clamp to 0–100
+**query_type** (pick most urgent/irreversible):
+order-status | shipping-delay | address-change | order-modification | order-hold | cancellation | refund | billing | product-inquiry | restock-inquiry | damaged-item | warranty | lock-issue | discount-request | gift-card-issue | nobl-air-support | collaboration | positive-feedback | technical-issue | general-inquiry
+- cancellation: wants to cancel/stop/reverse an order
+- lock-issue: TSA lock, lockout, combo reset
+- discount-request: promo code, price match
+- nobl-air-support: tracker setup, battery, app
+- collaboration: sponsorship, influencer, media
+- positive-feedback: compliment with no support need
+
+**churn_risk** (0–100, start at 50):
++30 threatening | +20 refund/cancellation | +15 repeated issue | +20 strong negative | +10 competitor mention
+−15 positive sentiment | −10 appreciation | clamp 0–100
 
 ## Customer Message
-
 {message}
 
 ## Output
-
-Return ONLY valid JSON, nothing else:
+Return ONLY this JSON, filled in:
 {"sentiment": "", "tone": "", "urgency": "", "sentiment_score": 0, "query_type": "", "churn_risk": 0}
 """
 
