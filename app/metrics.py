@@ -69,3 +69,10 @@ translate_duration_seconds = Histogram(
     "Inference wall-clock time for /translate calls",
     buckets=[0.5, 1, 2, 5, 10, 20, 30, 60, 120],
 )
+
+# Dedicated histogram for /vision inference duration
+vision_duration_seconds = Histogram(
+    "gemma_vision_duration_seconds",
+    "Inference wall-clock time for /vision calls",
+    buckets=[0.5, 1, 2, 5, 10, 20, 30, 60, 120],
+)

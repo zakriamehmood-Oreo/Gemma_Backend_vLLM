@@ -9,6 +9,10 @@ RUN apt-get update && apt-get install -y \
     python3.11-dev \
     python3-pip \
     curl \
+    libjpeg-turbo8 \
+    libwebp7 \
+    libtiff6 \
+    libopenjp2-7 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \

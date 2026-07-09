@@ -28,15 +28,18 @@ class BaseInferenceBackend(ABC):
 
 
 class TransformersBackend(BaseInferenceBackend):
+    supports_vision = True
+
     def __init__(self):
         super().__init__()
         self.tokenizer = None
         self.model = None
+        self.processor = None
         self._device = "cpu"
 
     def load(self):
         import torch
-        from transformers import AutoTokenizer, AutoModelForCausalLM
+        from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor
 
         try:
             import bitsandbytes  # noqa: F401
@@ -65,6 +68,7 @@ class TransformersBackend(BaseInferenceBackend):
         dtype = torch.bfloat16 if quantization_config is None else None
 
         self.tokenizer = AutoTokenizer.from_pretrained(settings.model_id, token=hf_token)
+        self.processor = AutoProcessor.from_pretrained(settings.model_id, token=hf_token)
         self.model = AutoModelForCausalLM.from_pretrained(
             settings.model_id,
             quantization_config=quantization_config,
@@ -114,6 +118,61 @@ class TransformersBackend(BaseInferenceBackend):
         completion_ids = output_ids[0][prompt_token_count:]
         response_text = self.tokenizer.decode(completion_ids, skip_special_tokens=True)
         return response_text, prompt_token_count, len(completion_ids)
+
+    def generate_vision(
+        self,
+        prompt: str,
+        images_b64: list[str],
+        max_new_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+    ) -> tuple[str, int, int]:
+        import base64
+        import io
+        import torch
+        from PIL import Image
+
+        max_new_tokens = max_new_tokens or settings.max_new_tokens
+        temperature = temperature or settings.temperature
+        top_p = top_p or settings.top_p
+
+        images = []
+        for i, b64 in enumerate(images_b64):
+            if "," in b64 and b64.startswith("data:"):
+                b64 = b64.split(",", 1)[1]
+            try:
+                images.append(Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB"))
+            except Exception as e:
+                raise ValueError(f"Invalid image data at index {i}: {e}")
+
+        content = [{"type": "image", "image": img} for img in images]
+        content.append({"type": "text", "text": prompt})
+        messages = [{"role": "user", "content": content}]
+
+        inputs = self.processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_tensors="pt",
+            return_dict=True,
+        )
+        inputs = {k: v.to(self._device) if hasattr(v, "to") else v for k, v in inputs.items()}
+
+        greedy = temperature <= 0.1
+        with torch.no_grad():
+            output_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=None if greedy else temperature,
+                top_p=None if greedy else top_p,
+                do_sample=not greedy,
+                pad_token_id=self.tokenizer.eos_token_id,
+            )
+
+        input_len = inputs["input_ids"].shape[-1]
+        completion_ids = output_ids[0][input_len:]
+        response_text = self.tokenizer.decode(completion_ids, skip_special_tokens=True)
+        return response_text, input_len, len(completion_ids)
 
 
 class VLLMBackend(BaseInferenceBackend):

@@ -35,6 +35,7 @@ from app.metrics import (
     tokens_per_second,
     translate_duration_seconds,
     translate_success_total,
+    vision_duration_seconds,
 )
 from app.schemas import (
     AnalyzeRequest,
@@ -45,6 +46,8 @@ from app.schemas import (
     HealthResponse,
     TranslateRequest,
     TranslateResponse,
+    VisionRequest,
+    VisionResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -464,4 +467,53 @@ async def translate(request: TranslateRequest):
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             preprocessed_message=clean_message,
+        )
+
+
+@app.post("/vision", response_model=VisionResponse, dependencies=[Depends(verify_api_key)])
+async def vision(request: VisionRequest):
+    if not gemma.is_loaded:
+        requests_total.labels(status="model_not_loaded", endpoint="vision").inc()
+        raise HTTPException(status_code=503, detail="Model is not loaded")
+
+    if not getattr(gemma, "supports_vision", False):
+        raise HTTPException(status_code=501, detail="Vision not supported with the current inference backend")
+
+    async with _concurrency_slot():
+        start = time.perf_counter()
+        loop = asyncio.get_event_loop()
+        try:
+            response_text, prompt_tokens, completion_tokens = await loop.run_in_executor(
+                None,
+                lambda: gemma.generate_vision(
+                    prompt=request.prompt,
+                    images_b64=request.images,
+                    max_new_tokens=request.max_new_tokens,
+                ),
+            )
+        except ValueError as e:
+            requests_total.labels(status="bad_request", endpoint="vision").inc()
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception:
+            requests_total.labels(status="error", endpoint="vision").inc()
+            logger.exception("Vision generation failed")
+            raise HTTPException(status_code=500, detail="Inference error")
+
+        duration = time.perf_counter() - start
+        inference_duration_seconds.observe(duration)
+        vision_duration_seconds.observe(duration)
+        prompt_tokens_total.inc(prompt_tokens)
+        completion_tokens_total.inc(completion_tokens)
+        tokens_per_second.observe(completion_tokens / duration if duration > 0 else 0)
+        requests_total.labels(status="success", endpoint="vision").inc()
+        logger.info(
+            "endpoint=/vision status=success inference_duration=%.3f "
+            "prompt_tokens=%d completion_tokens=%d",
+            duration, prompt_tokens, completion_tokens,
+        )
+
+        return VisionResponse(
+            response=response_text,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )

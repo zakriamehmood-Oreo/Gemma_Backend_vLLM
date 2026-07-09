@@ -93,3 +93,15 @@ class TranslateResponse(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     preprocessed_message: str
+
+
+class VisionRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=5000, description="Text prompt to ask about the image(s)")
+    images: list[str] = Field(..., min_length=1, max_length=10, description="List of base64-encoded images (JPEG/PNG/WebP). Each may be prefixed with data:image/...;base64,")
+    max_new_tokens: int | None = Field(None, gt=0, le=1024)
+
+
+class VisionResponse(BaseModel):
+    response: str
+    prompt_tokens: int
+    completion_tokens: int
